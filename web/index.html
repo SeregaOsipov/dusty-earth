@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Dusty Earth — Interactive GPU Atmospheric &amp; Dust Forecast</title>
+
+  <!-- Local MapLibre GL JS & CSS (with CDN fallback) -->
+  <link rel="stylesheet" href="vendor/maplibre-gl.css" onerror="this.onerror=null;this.href='https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css';" />
+  <script src="vendor/maplibre-gl.js" onerror="this.onerror=null;this.src='https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js';"></script>
+
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- Fullscreen Map Canvas Stage -->
+  <div id="map"></div>
+  <canvas id="scalar-canvas"></canvas>
+  <canvas id="particle-canvas"></canvas>
+
+  <!-- Top-Left Brand & Forecast Cycle Selector -->
+  <div class="top-left-dock">
+    <div class="brand-card">
+      <div class="brand-badge">
+        <div class="pulse-dot"></div>
+        <span class="brand-name">Dusty Earth</span>
+      </div>
+      <span class="brand-tag">dusty.earth</span>
+    </div>
+
+    <div class="cycle-selector-card">
+      <label for="cycle-select">Cycle</label>
+      <select id="cycle-select" class="cycle-dropdown" aria-label="Forecast Cycle"></select>
+    </div>
+  </div>
+
+  <!-- Right-Side Layer Dock (Windy Style) -->
+  <aside class="layer-dock" aria-label="Variable Selection">
+    <div class="layer-dock-header">Forecast Layers</div>
+    <div id="layer-dock-list" style="display:flex;flex-direction:column;gap:0.35rem;"></div>
+
+    <div class="overlay-toggles">
+      <button id="btn-toggle-wind" class="toggle-btn active" title="Toggle Wind Streamlines (W)">
+        <span>💨 Streamlines</span>
+        <span style="font-size:0.65rem;">ON</span>
+      </button>
+      <button id="btn-settings" class="toggle-btn" title="Adjust Streamline Settings">
+        <span>⚙️ Particle FX</span>
+        <span>&rsaquo;</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Settings Panel -->
+  <div id="settings-panel" class="settings-panel">
+    <div class="settings-title">
+      <span>Streamline Settings</span>
+      <button id="settings-close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.1rem;">&times;</button>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">
+        <span>Particles</span>
+        <strong id="setting-particle-count-val">4500</strong>
+      </div>
+      <input type="range" id="setting-particle-count" class="setting-slider" min="1000" max="10000" step="500" value="4500" />
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">
+        <span>Speed</span>
+        <strong id="setting-particle-speed-val">1x</strong>
+      </div>
+      <input type="range" id="setting-particle-speed" class="setting-slider" min="0.5" max="3.0" step="0.25" value="1.0" />
+    </div>
+  </div>
+
+  <!-- Interactive Weather Probe (Cursor Tooltip) -->
+  <div id="weather-probe" class="weather-probe">
+    <div class="probe-coords">--</div>
+    <div class="probe-scalar">--</div>
+    <div class="probe-wind">--</div>
+  </div>
+
+  <!-- Bottom-Right Colorbar / Legend Dock -->
+  <div id="legend-dock" class="legend-dock">
+    <div class="legend-title">
+      <span id="legend-var-title">Surface Dust</span>
+      <span id="legend-var-units">[µg/m³]</span>
+    </div>
+    <div id="legend-gradient" class="legend-gradient"></div>
+    <div class="legend-ticks">
+      <span id="legend-min">0</span>
+      <span id="legend-max">1500</span>
+    </div>
+  </div>
+
+  <!-- Bottom Playback & Timeline Scrubbing Dock -->
+  <footer class="timeline-dock" aria-label="Playback Controls">
+    <div class="timeline-main-row">
+      <!-- Transport Buttons -->
+      <div class="transport-group">
+        <button id="btn-first" class="ctrl-btn" title="Jump to Start (Home)" aria-label="First Frame">&#x23EE;</button>
+        <button id="btn-prev" class="ctrl-btn" title="Step -1h (Left Arrow)" aria-label="Previous Frame">&#x23F4;</button>
+        <button id="btn-play" class="ctrl-btn play-btn" title="Play / Pause (Spacebar)" aria-label="Play or Pause">
+          <span id="play-icon">&#x25B6;</span>
+          <span id="play-label">Play</span>
+        </button>
+        <button id="btn-next" class="ctrl-btn" title="Step +1h (Right Arrow)" aria-label="Next Frame">&#x23F5;</button>
+        <button id="btn-last" class="ctrl-btn" title="Jump to End (End)" aria-label="Last Frame">&#x23ED;</button>
+      </div>
+
+      <!-- Scrub Track -->
+      <div class="scrub-track-wrap">
+        <div class="scrub-header">
+          <span id="scrub-valid-time" class="scrub-valid">Valid: -- UTC</span>
+          <span id="scrub-lead-time" class="scrub-lead">Lead: T+00</span>
+        </div>
+        <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="0" value="0" step="1" aria-label="Timeline Scrubber" />
+        <div id="timeline-ticks" class="timeline-ticks"></div>
+      </div>
+
+      <!-- Playback Options (Loop Mode & FPS) -->
+      <div class="playback-options">
+        <button id="btn-loop-mode" class="mode-btn" title="Toggle Loop Mode (L)">&#x1F501; Repeat</button>
+        <div class="fps-control">
+          <span>Speed:</span>
+          <strong id="fps-value" style="color:var(--accent-emerald);">4</strong>
+          <input type="range" id="fps-slider" class="fps-slider" min="1" max="10" value="4" step="1" aria-label="Animation FPS" />
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
