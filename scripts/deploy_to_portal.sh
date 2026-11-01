@@ -17,7 +17,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Default Configuration
 CYCLE=""
 INPUT_DIR=""
-OUTPUT_DIR="/scratch/sims/WRF_run/operational_forecast/portal_web/interactive"
+OUTPUT_DIR="/scratch/sims/WRF_run/operational_forecast/portal_web"
 WORKERS=6
 RETENTION_DAYS=5
 

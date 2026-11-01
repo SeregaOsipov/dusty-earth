@@ -14,8 +14,8 @@ export class WindParticles {
     this.gridMeta = null;
 
     this.particles = [];
-    this.numParticles = 4500;
-    this.particleSpeed = 0.00035;
+    this.numParticles = 1000;
+    this.particleSpeed = 0.0007;
     this.maxAge = 75;
     this.lineWidth = 1.25;
     this.trailFade = 0.045; // Fading factor per frame

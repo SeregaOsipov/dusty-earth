@@ -15,7 +15,7 @@
 - **Zero-JSON Gridded Data Payloads**:
   Instead of bloated JSON or slow GeoTIFF decoders, spatial fields are dumped into contiguous, flat **`Float32` Binary (`.bin`)** files. The browser memory-maps them instantly with `new Float32Array(arrayBuffer)` with sub-millisecond overhead.
 - **Silky-Smooth 60 FPS Wind Streamlines**:
-  Flowing particle animation driven by continuous bilinear sampling of 10m $(U, V)$ vector fields with glowing trail fading and custom density/speed controls.
+  Flowing particle animation driven by continuous bilinear sampling of 10m $(U, V)$ vector fields with glowing trail fading and custom density/speed controls (default `1000` particles at `2x` speed).
 - **Interactive Weather Probe**:
   Hovering or clicking anywhere on the map bilinearly interpolates active scalar concentrations, wind speed, and meteorological wind direction (16 cardinal points + degrees).
 - **Pluggable Species & Variable Registry**:
@@ -77,27 +77,27 @@ Run `dusty-export` against any standard WRF-Chem or NetCDF forecast file or dire
 
 ```bash
 dusty-export \
-  --input /scratch/sims/WRF_run/operational_forecast/ag_forecast_cycle/run \
-  --output /var/www/forecast_portal/interactive \
-  --cycle 20261022_00 \
+  --input /scratch/sims/WRF_run/operational_forecast/ag_weekly_7day_cycle/run \
+  --output /scratch/sims/WRF_run/operational_forecast/portal_web \
+  --cycle 20261025_00 \
   --workers 6
 ```
 
 Parameters:
 - `-i, --input`: Path to a NetCDF/wrfout file or directory containing model outputs.
-- `-o, --output`: Web portal root directory where `index.html`, `manifest.json`, and `cycles/` reside.
-- `-c, --cycle`: (Optional) Forecast cycle ID (e.g. `20261022_00`). Automatically detected if omitted.
+- `-o, --output`: Web portal root directory where `index.html`, `manifest.json`, and `cycles/` reside (served at `http://10.161.93.144:8080/`, while the legacy static WebP portal resides at `/static`).
+- `-c, --cycle`: (Optional) Forecast cycle ID (e.g. `20261025_00`). Automatically detected if omitted.
 - `-v, --variables`: (Optional) Comma-separated variable IDs to export (defaults to all registered).
 - `-w, --workers`: Number of parallel multiprocessing workers for grid rendering (default: 4).
 
 ### 3. Operational Automation (Stage 4 Integration)
 
-To automatically deploy new cycles at the end of a forecast simulation and prune cycles older than 5 days:
+Automatically invoked by `/home/osipovs/Models/operational-forecasting/scripts/run_portal_postproc.sh` at the end of every forecast simulation (or run standalone) to deploy new cycles to the root portal and prune cycles older than 5 days:
 
 ```bash
 ./scripts/deploy_to_portal.sh \
-  --input /scratch/sims/WRF_run/operational_forecast/ag_forecast_cycle/run \
-  --output /scratch/sims/WRF_run/operational_forecast/portal_web/interactive \
+  --input /scratch/sims/WRF_run/operational_forecast/ag_weekly_7day_cycle/run \
+  --output /scratch/sims/WRF_run/operational_forecast/portal_web \
   --retention-days 5
 ```
 
