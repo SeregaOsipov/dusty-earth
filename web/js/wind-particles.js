@@ -1,7 +1,11 @@
 /**
  * GPU & Canvas Wind Particle Streamline Animation Engine for Dusty Earth.
- * Delivers a 60 FPS flowing wind streamline experience (Windy.com style).
+ * Scales particle advection cleanly with MapLibre zoom (regional 10 km -> urban 1 m),
+ * constrains spawns to the visible domain viewport, and stops at NaN building obstacles.
  */
+
+import { decodeFieldBuffer } from "./scalar-layer.js";
+import { lonLatToGridIndices } from "./grid-coords.js";
 
 export class WindParticles {
   constructor(canvas, mapEngine) {
@@ -18,16 +22,17 @@ export class WindParticles {
     this.particleSpeed = 0.0007;
     this.maxAge = 75;
     this.lineWidth = 1.25;
-    this.trailFade = 0.045; // Fading factor per frame
+    this.trailFade = 0.045;
 
     this.isRunning = false;
     this.visible = true;
     this.animId = null;
 
     this.cache = new Map(); // url -> Float32Array
+    this.maxCacheEntries = 240;
   }
 
-  async loadBuffer(url) {
+  async loadBuffer(url, fileEntry = null, component = "u") {
     if (this.cache.has(url)) {
       return this.cache.get(url);
     }
@@ -36,50 +41,131 @@ export class WindParticles {
       throw new Error(`Failed to fetch wind component: ${url}`);
     }
     const buf = await res.arrayBuffer();
-    const f32 = new Float32Array(buf);
+    let wrappedEntry = null;
+    if (fileEntry && fileEntry.encoding === "uint16") {
+      wrappedEntry = {
+        encoding: "uint16",
+        qmin: component === "u" ? fileEntry.u_qmin : fileEntry.v_qmin,
+        qmax: component === "u" ? fileEntry.u_qmax : fileEntry.v_qmax,
+      };
+    }
+    const f32 = decodeFieldBuffer(buf, wrappedEntry);
+    if (this.cache.size >= this.maxCacheEntries) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== undefined) this.cache.delete(oldestKey);
+    }
     this.cache.set(url, f32);
     return f32;
   }
 
-  async setWindField(uUrl, vUrl, gridMeta) {
+  async setWindField(uUrlOrEntry, vUrlOrGridMeta, maybeGridMeta = null) {
+    let uUrl;
+    let vUrl;
+    let gridMeta;
+    let fileEntry = null;
+
+    if (typeof uUrlOrEntry === "object" && uUrlOrEntry !== null) {
+      fileEntry = uUrlOrEntry;
+      uUrl = fileEntry.u;
+      vUrl = fileEntry.v;
+      gridMeta = vUrlOrGridMeta;
+    } else {
+      uUrl = uUrlOrEntry;
+      vUrl = vUrlOrGridMeta;
+      gridMeta = maybeGridMeta;
+    }
+
+    const prevMeta = this.gridMeta;
+    const domainChanged =
+      !prevMeta ||
+      prevMeta.nx !== gridMeta.nx ||
+      prevMeta.ny !== gridMeta.ny ||
+      Math.abs(prevMeta.lon_min - gridMeta.lon_min) > 1e-4;
+
     this.gridMeta = gridMeta;
-    const [u, v] = await Promise.all([this.loadBuffer(uUrl), this.loadBuffer(vUrl)]);
+    const [u, v] = await Promise.all([
+      this.loadBuffer(uUrl, fileEntry, "u"),
+      this.loadBuffer(vUrl, fileEntry, "v"),
+    ]);
     this.uBuffer = u;
     this.vBuffer = v;
 
-    this.initParticles();
+    if (domainChanged || !this.particles || this.particles.length !== this.numParticles * 4) {
+      this.clear();
+      this.initParticles();
+    }
     if (this.visible && !this.isRunning) {
       this.start();
     }
   }
 
-  initParticles() {
-    if (!this.gridMeta) return;
+  _getSpawnBounds() {
+    if (!this.gridMeta) return null;
     const { lon_min, lon_max, lat_min, lat_max } = this.gridMeta;
-    this.particles = new Float32Array(this.numParticles * 4); // [lon, lat, age, maxAge]
 
+    if (this.mapEngine && this.mapEngine.map) {
+      const b = this.mapEngine.map.getBounds();
+      if (b) {
+        const padLon = (b.getEast() - b.getWest()) * 0.1;
+        const padLat = (b.getNorth() - b.getSouth()) * 0.1;
+        const iLonMin = Math.max(lon_min, b.getWest() - padLon);
+        const iLonMax = Math.min(lon_max, b.getEast() + padLon);
+        const iLatMin = Math.max(lat_min, b.getSouth() - padLat);
+        const iLatMax = Math.min(lat_max, b.getNorth() + padLat);
+        if (iLonMax > iLonMin && iLatMax > iLatMin) {
+          return { lonMin: iLonMin, lonMax: iLonMax, latMin: iLatMin, latMax: iLatMax };
+        }
+      }
+    }
+    return { lonMin: lon_min, lonMax: lon_max, latMin: lat_min, latMax: lat_max };
+  }
+
+  _pickValidCoord(bounds) {
+    const spanLon = bounds.lonMax - bounds.lonMin;
+    const spanLat = bounds.latMax - bounds.latMin;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const lon = bounds.lonMin + Math.random() * spanLon;
+      const lat = bounds.latMin + Math.random() * spanLat;
+      if (!this.uBuffer || this.sampleVector(lon, lat) !== null) {
+        return [lon, lat];
+      }
+    }
+    return [bounds.lonMin + Math.random() * spanLon, bounds.latMin + Math.random() * spanLat];
+  }
+
+  initParticles() {
+    const bounds = this._getSpawnBounds();
+    if (!bounds) return;
+
+    this.particles = new Float32Array(this.numParticles * 4);
     for (let i = 0; i < this.numParticles; i++) {
       const offset = i * 4;
-      this.particles[offset] = lon_min + Math.random() * (lon_max - lon_min);
-      this.particles[offset + 1] = lat_min + Math.random() * (lat_max - lat_min);
-      this.particles[offset + 2] = Math.floor(Math.random() * this.maxAge); // staggered start age
+      const [lon, lat] = this._pickValidCoord(bounds);
+      this.particles[offset] = lon;
+      this.particles[offset + 1] = lat;
+      this.particles[offset + 2] = Math.floor(Math.random() * this.maxAge);
       this.particles[offset + 3] = this.maxAge * (0.6 + Math.random() * 0.8);
     }
   }
 
-  sampleVector(lon, lat) {
-    if (!this.gridMeta || !this.uBuffer || !this.vBuffer) return [0, 0];
-    const { nx, ny, lon_min, lon_max, lat_min, lat_max, dx, dy } = this.gridMeta;
+  respawnInView() {
+    if (!this.gridMeta || !this.uBuffer) return;
+    this.initParticles();
+  }
 
-    if (lon < lon_min || lon > lon_max || lat < lat_min || lat > lat_max) {
+  sampleVector(lon, lat) {
+    if (!this.gridMeta || !this.uBuffer || !this.vBuffer) return null;
+    const { nx, ny } = this.gridMeta;
+    const pos = lonLatToGridIndices(lon, lat, this.gridMeta);
+    if (!pos.inBounds) {
       return null;
     }
 
-    const col = (lon - lon_min) / dx;
-    const row = (lat_max - lat) / dy; // North-to-South row orientation
+    const col = pos.col;
+    const row = pos.row;
 
-    const c0 = Math.floor(col);
-    const r0 = Math.floor(row);
+    const c0 = Math.max(0, Math.min(nx - 1, Math.floor(col)));
+    const r0 = Math.max(0, Math.min(ny - 1, Math.floor(row)));
     const c1 = Math.min(nx - 1, c0 + 1);
     const r1 = Math.min(ny - 1, r0 + 1);
 
@@ -91,14 +177,28 @@ export class WindParticles {
     const idx10 = r1 * nx + c0;
     const idx11 = r1 * nx + c1;
 
-    // Bilinear interpolation for U
-    const u0 = (1 - fx) * this.uBuffer[idx00] + fx * this.uBuffer[idx01];
-    const u1 = (1 - fx) * this.uBuffer[idx10] + fx * this.uBuffer[idx11];
+    const u00 = this.uBuffer[idx00];
+    const u01 = this.uBuffer[idx01];
+    const u10 = this.uBuffer[idx10];
+    const u11 = this.uBuffer[idx11];
+    const v00 = this.vBuffer[idx00];
+    const v01 = this.vBuffer[idx01];
+    const v10 = this.vBuffer[idx10];
+    const v11 = this.vBuffer[idx11];
+
+    if (
+      Number.isNaN(u00) || Number.isNaN(u01) || Number.isNaN(u10) || Number.isNaN(u11) ||
+      Number.isNaN(v00) || Number.isNaN(v01) || Number.isNaN(v10) || Number.isNaN(v11)
+    ) {
+      return null;
+    }
+
+    const u0 = (1 - fx) * u00 + fx * u01;
+    const u1 = (1 - fx) * u10 + fx * u11;
     const u = (1 - fy) * u0 + fy * u1;
 
-    // Bilinear interpolation for V
-    const v0 = (1 - fx) * this.vBuffer[idx00] + fx * this.vBuffer[idx01];
-    const v1 = (1 - fx) * this.vBuffer[idx10] + fx * this.vBuffer[idx11];
+    const v0 = (1 - fx) * v00 + fx * v01;
+    const v1 = (1 - fx) * v10 + fx * v11;
     const v = (1 - fy) * v0 + fy * v1;
 
     return [u, v];
@@ -148,36 +248,39 @@ export class WindParticles {
 
     const width = window.innerWidth;
     const height = window.innerHeight;
+    const bounds = this._getSpawnBounds();
+    if (!bounds) return;
 
-    // 1. Trail Fading Effect (fades existing strokes to create glowing streamline trails)
     this.ctx.save();
     this.ctx.globalCompositeOperation = "destination-out";
     this.ctx.fillStyle = `rgba(0, 0, 0, ${this.trailFade})`;
     this.ctx.fillRect(0, 0, width, height);
     this.ctx.restore();
 
-    // 2. Advance and Draw Particles
-    const { lon_min, lon_max, lat_min, lat_max } = this.gridMeta;
+    const zoom = this.mapEngine && this.mapEngine.map ? this.mapEngine.map.getZoom() : 5.0;
+    const zoomScale = Math.pow(2.0, 5.0 - zoom);
+
     this.ctx.save();
     this.ctx.lineWidth = this.lineWidth;
     this.ctx.lineCap = "round";
-
-    // Begin path batching for performance
     this.ctx.beginPath();
     this.ctx.strokeStyle = "rgba(240, 249, 255, 0.72)";
 
     for (let i = 0; i < this.numParticles; i++) {
       const offset = i * 4;
-      let lon = this.particles[offset];
-      let lat = this.particles[offset + 1];
-      let age = this.particles[offset + 2];
+      const lon = this.particles[offset];
+      const lat = this.particles[offset + 1];
+      const age = this.particles[offset + 2];
       const maxAge = this.particles[offset + 3];
 
       const vec = this.sampleVector(lon, lat);
-      if (!vec || age >= maxAge) {
-        // Respawn particle randomly
-        this.particles[offset] = lon_min + Math.random() * (lon_max - lon_min);
-        this.particles[offset + 1] = lat_min + Math.random() * (lat_max - lat_min);
+      const outOfView =
+        lon < bounds.lonMin || lon > bounds.lonMax || lat < bounds.latMin || lat > bounds.latMax;
+
+      if (!vec || age >= maxAge || outOfView) {
+        const [nLon, nLat] = this._pickValidCoord(bounds);
+        this.particles[offset] = nLon;
+        this.particles[offset + 1] = nLat;
         this.particles[offset + 2] = 0;
         continue;
       }
@@ -185,17 +288,15 @@ export class WindParticles {
       const [u, v] = vec;
       const cosLat = Math.cos((lat * Math.PI) / 180.0) || 1.0;
 
-      const dLon = (u * this.particleSpeed) / cosLat;
-      const dLat = v * this.particleSpeed;
+      const dLon = (u * this.particleSpeed * zoomScale) / cosLat;
+      const dLat = v * this.particleSpeed * zoomScale;
 
       const nextLon = lon + dLon;
       const nextLat = lat + dLat;
 
-      // Project old and new positions to screen pixels
       const p0 = this.mapEngine.project(lon, lat);
       const p1 = this.mapEngine.project(nextLon, nextLat);
 
-      // Only draw if within current viewport
       if (
         (p0.x >= -50 && p0.x <= width + 50 && p0.y >= -50 && p0.y <= height + 50) ||
         (p1.x >= -50 && p1.x <= width + 50 && p1.y >= -50 && p1.y <= height + 50)
@@ -204,7 +305,6 @@ export class WindParticles {
         this.ctx.lineTo(p1.x, p1.y);
       }
 
-      // Update particle state
       this.particles[offset] = nextLon;
       this.particles[offset + 1] = nextLat;
       this.particles[offset + 2] = age + 1;

@@ -10,20 +10,20 @@ import sys
 from typing import Optional, Sequence
 
 from .exporter import export_forecast
-from .registry import DEFAULT_REGISTRY, VariableRegistry
+from .registry import DEFAULT_REGISTRY
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="dusty-export",
-        description="High-performance binary grid exporter for Dusty Earth (GPU-accelerated WebGL forecast viewer).",
+        description="High-performance multi-model binary grid exporter for Dusty Earth (GPU-accelerated WebGL viewer).",
     )
     parser.add_argument(
         "-i", "--input",
         dest="input_path",
         required=True,
         type=Path,
-        help="Path to input NetCDF file or directory containing model outputs (wrfout, icon-art, cams).",
+        help="Path to input NetCDF file or directory containing model outputs (wrfout, icon-art, palm-4u, cams).",
     )
     parser.add_argument(
         "-o", "--output",
@@ -53,6 +53,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=min(8, os.cpu_count() or 4),
         help="Number of parallel worker processes (default: min(8, cpu_count)).",
     )
+    parser.add_argument(
+        "--palm-root",
+        dest="palm_root",
+        type=Path,
+        default=None,
+        help="Optional root directory of PALM-4U simulations (auto-discovers matching cycle_id runs).",
+    )
+    parser.add_argument(
+        "--extra-input",
+        dest="extra_inputs",
+        nargs="*",
+        type=Path,
+        default=None,
+        help="Additional model output directories/files to co-register in this cycle.",
+    )
     return parser.parse_args(argv)
 
 
@@ -65,6 +80,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             cycle_str=args.cycle_str,
             variables=args.variables,
             workers=args.workers,
+            palm_root=args.palm_root,
+            extra_inputs=args.extra_inputs,
         )
     except Exception as e:
         print(f"\n[ERROR] dusty-export failed: {e}", file=sys.stderr)

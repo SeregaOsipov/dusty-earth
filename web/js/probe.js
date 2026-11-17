@@ -1,8 +1,11 @@
 /**
  * Interactive Weather Probe Tooltip for Dusty Earth.
- * Bilinearly samples active Float32 scalar and vector buffers under the cursor
- * and renders a sleek floating telemetry badge.
+ * Bilinearly samples active Float32/Uint16 scalar and vector buffers under the cursor,
+ * handles NaN building cutouts gracefully (including 3D height lookup), and shows
+ * active model resolution provenance.
  */
+
+import { lonLatToGridIndices } from "./grid-coords.js";
 
 export class WeatherProbe {
   constructor(containerElement, mapEngine, scalarLayer, windParticles) {
@@ -10,6 +13,7 @@ export class WeatherProbe {
     this.mapEngine = mapEngine;
     this.scalarLayer = scalarLayer;
     this.windParticles = windParticles;
+    this.buildingsLayer = null;
 
     this.coordsEl = this.el.querySelector(".probe-coords");
     this.scalarEl = this.el.querySelector(".probe-scalar");
@@ -18,12 +22,21 @@ export class WeatherProbe {
     this.pinned = false;
     this.lastLngLat = null;
     this.activeVarConfig = null;
+    this.activeModelMeta = null;
 
     this._bindEvents();
   }
 
   setVarConfig(varConfig) {
     this.activeVarConfig = varConfig;
+  }
+
+  setModelMeta(modelMeta) {
+    this.activeModelMeta = modelMeta;
+  }
+
+  setBuildingsLayer(buildingsLayer) {
+    this.buildingsLayer = buildingsLayer;
   }
 
   _bindEvents() {
@@ -36,6 +49,12 @@ export class WeatherProbe {
     });
 
     map.on("click", (e) => {
+      if (this.buildingsLayer && this.buildingsLayer.handleMapClick(e, this.activeModelMeta)) {
+        this.pinned = false;
+        this.el.classList.remove("pinned");
+        this.hide();
+        return;
+      }
       this.pinned = !this.pinned;
       this.update(e.lngLat, e.point);
       if (this.pinned) {
@@ -62,32 +81,45 @@ export class WeatherProbe {
   sampleScalar(lon, lat) {
     const buf = this.scalarLayer.getCurrentBuffer();
     const meta = this.scalarLayer.gridMeta;
-    if (!buf || !meta) return null;
+    if (!buf || !meta) return { value: null, inBounds: false };
 
-    const { nx, ny, lon_min, lon_max, lat_min, lat_max, dx, dy } = meta;
-    if (lon < lon_min || lon > lon_max || lat < lat_min || lat > lat_max) {
-      return null;
+    const pos = lonLatToGridIndices(lon, lat, meta);
+    if (!pos.inBounds) {
+      return { value: null, inBounds: false };
     }
 
-    const col = (lon - lon_min) / dx;
-    const row = (lat_max - lat) / dy; // North-to-South row orientation
+    const { nx, ny } = meta;
+    const col = pos.col;
+    const row = pos.row;
 
-    const c0 = Math.floor(col);
-    const r0 = Math.floor(row);
+    const c0 = Math.max(0, Math.min(nx - 1, Math.floor(col)));
+    const r0 = Math.max(0, Math.min(ny - 1, Math.floor(row)));
     const c1 = Math.min(nx - 1, c0 + 1);
     const r1 = Math.min(ny - 1, r0 + 1);
 
     const fx = col - c0;
     const fy = row - r0;
 
-    const idx00 = r0 * nx + c0;
-    const idx01 = r0 * nx + c1;
-    const idx10 = r1 * nx + c0;
-    const idx11 = r1 * nx + c1;
+    const s00 = buf[r0 * nx + c0];
+    const s01 = buf[r0 * nx + c1];
+    const s10 = buf[r1 * nx + c0];
+    const s11 = buf[r1 * nx + c1];
 
-    const v0 = (1 - fx) * buf[idx00] + fx * buf[idx01];
-    const v1 = (1 - fx) * buf[idx10] + fx * buf[idx11];
-    return (1 - fy) * v0 + fy * v1;
+    if (
+      Number.isNaN(s00) || Number.isNaN(s01) || Number.isNaN(s10) || Number.isNaN(s11)
+    ) {
+      const nc = Math.max(0, Math.min(nx - 1, Math.round(col)));
+      const nr = Math.max(0, Math.min(ny - 1, Math.round(row)));
+      const nearVal = buf[nr * nx + nc];
+      if (Number.isNaN(nearVal)) {
+        return { value: null, inBounds: true };
+      }
+      return { value: nearVal, inBounds: true };
+    }
+
+    const v0 = (1 - fx) * s00 + fx * s01;
+    const v1 = (1 - fx) * s10 + fx * s11;
+    return { value: (1 - fy) * v0 + fy * v1, inBounds: true };
   }
 
   update(lngLat, point) {
@@ -95,35 +127,45 @@ export class WeatherProbe {
     const lon = lngLat.lng;
     const lat = lngLat.lat;
 
-    const scalarVal = this.sampleScalar(lon, lat);
+    const scalarRes = this.sampleScalar(lon, lat);
+    const scalarVal = scalarRes.value;
     const windVec = this.windParticles.sampleVector(lon, lat);
 
-    if (scalarVal === null && windVec === null) {
+    const meta = this.scalarLayer.gridMeta;
+    const isMicroMask = Boolean(
+      scalarRes.inBounds && scalarVal === null && meta && meta.has_nan_mask && meta.dx_m > 0 && meta.dx_m <= 250
+    );
+
+    if (scalarVal === null && windVec === null && !isMicroMask) {
       this.hide();
       return;
     }
 
-    // Coordinates Display
+    const resM = meta && meta.dx_m ? meta.dx_m : 10000;
+    const decimals = resM < 50 ? 5 : resM < 500 ? 4 : resM < 5000 ? 3 : 2;
     const latDir = lat >= 0 ? "°N" : "°S";
     const lonDir = lon >= 0 ? "°E" : "°W";
-    this.coordsEl.textContent = `${Math.abs(lat).toFixed(2)}${latDir}, ${Math.abs(lon).toFixed(2)}${lonDir}`;
+    const modelTag = this.activeModelMeta ? ` · ${this.activeModelMeta.short_name}` : "";
+    this.coordsEl.textContent = `${Math.abs(lat).toFixed(decimals)}${latDir}, ${Math.abs(lon).toFixed(decimals)}${lonDir}${modelTag}`;
 
-    // Active Scalar Value Display
     if (scalarVal !== null && this.activeVarConfig) {
       const units = this.activeVarConfig.units || "";
       const name = this.activeVarConfig.short_name || this.activeVarConfig.name;
       const formatted = scalarVal >= 100 ? scalarVal.toFixed(0) : scalarVal >= 10 ? scalarVal.toFixed(1) : scalarVal.toFixed(2);
       this.scalarEl.textContent = `${name}: ${formatted} ${units}`;
       this.scalarEl.style.display = "block";
+    } else if (isMicroMask) {
+      const bHit = this.buildingsLayer ? this.buildingsLayer.queryBuildingAt(point) : null;
+      const bH = bHit && bHit.properties ? Number(bHit.properties.height_agl ?? bHit.properties.render_height) : Number.NaN;
+      this.scalarEl.textContent = Number.isFinite(bH) ? `🏢 Building (${bH.toFixed(1)} m AGL)` : "Building / Obstacle";
+      this.scalarEl.style.display = "block";
     } else {
       this.scalarEl.style.display = "none";
     }
 
-    // Wind Speed & Cardinal Direction Display
     if (windVec) {
       const [u, v] = windVec;
       const speed = Math.hypot(u, v);
-      // Meteorological wind direction (direction wind is coming FROM)
       let deg = (Math.atan2(-u, -v) * 180.0) / Math.PI;
       if (deg < 0) deg += 360.0;
 
@@ -143,8 +185,8 @@ export class WeatherProbe {
 
   _positionTooltip(x, y) {
     const margin = 16;
-    const tooltipW = 200;
-    const tooltipH = 80;
+    const tooltipW = 225;
+    const tooltipH = 85;
 
     let posX = x + margin;
     let posY = y + margin;

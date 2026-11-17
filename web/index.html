@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="author" content="Dr. Sergey Osipov, QEERI, HBKU" />
+  <meta property="og:site_name" content="QEERI / HBKU Atmospheric Forecasting" />
+  <meta property="og:description" content="Operational high-resolution atmospheric chemistry and dust forecasting system. Lead PI: Dr. Sergey Osipov (QEERI/HBKU)." />
   <title>Dusty Earth — Interactive GPU Atmospheric &amp; Dust Forecast</title>
 
   <!-- Local MapLibre GL JS & CSS (with CDN fallback) -->
@@ -14,7 +17,6 @@
 <body>
   <!-- Fullscreen Map Canvas Stage -->
   <div id="map"></div>
-  <canvas id="scalar-canvas"></canvas>
   <canvas id="particle-canvas"></canvas>
 
   <!-- Top-Left Brand & Forecast Cycle Selector -->
@@ -36,15 +38,27 @@
   <!-- Right-Side Layer Dock (Windy Style) -->
   <aside class="layer-dock" aria-label="Variable Selection">
     <div class="layer-dock-header">Forecast Layers</div>
-    <div id="layer-dock-list" style="display:flex;flex-direction:column;gap:0.35rem;"></div>
+    <div id="layer-dock-list" class="variable-pills"></div>
 
     <div class="overlay-toggles">
       <button id="btn-toggle-wind" class="toggle-btn active" title="Toggle Wind Streamlines (W)">
         <span>💨 Streamlines</span>
-        <span style="font-size:0.65rem;">ON</span>
+        <span class="toggle-state" style="font-size:0.65rem;">ON</span>
+      </button>
+      <button id="btn-toggle-buildings" class="toggle-btn active" title="Toggle 3D Urban Buildings (B)">
+        <span>🏢 3D Buildings</span>
+        <span class="toggle-state" style="font-size:0.65rem;">ON</span>
+      </button>
+      <button id="btn-toggle-canopy" class="toggle-btn active" title="Toggle 3D Vegetation Canopy (T)" hidden>
+        <span>🌳 3D Canopy</span>
+        <span class="toggle-state" style="font-size:0.65rem;">ON</span>
       </button>
       <button id="btn-settings" class="toggle-btn" title="Adjust Streamline Settings">
         <span>⚙️ Particle FX</span>
+        <span>&rsaquo;</span>
+      </button>
+      <button id="btn-model-info" class="toggle-btn" title="System &amp; Scientific Attribution (I)" aria-haspopup="dialog" aria-controls="model-info-modal">
+        <span>&#x24D8; Model Info</span>
         <span>&rsaquo;</span>
       </button>
     </div>
@@ -79,55 +93,138 @@
     <div class="probe-wind">--</div>
   </div>
 
-  <!-- Bottom-Right Colorbar / Legend Dock -->
-  <div id="legend-dock" class="legend-dock">
-    <div class="legend-title">
-      <span id="legend-var-title">Surface Dust</span>
-      <span id="legend-var-units">[µg/m³]</span>
-    </div>
-    <div id="legend-gradient" class="legend-gradient"></div>
-    <div class="legend-ticks">
-      <span id="legend-min">0</span>
-      <span id="legend-max">1500</span>
+  <!-- Minimalist Model Info & Scientific Attribution Modal -->
+  <div id="model-info-backdrop" class="modal-backdrop" aria-hidden="true">
+    <div id="model-info-modal" class="model-info-modal" role="dialog" aria-modal="true" aria-labelledby="model-info-title">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-eyebrow">QEERI / HBKU Operational Forecasting</span>
+          <h2 id="model-info-title" class="modal-title">System &amp; Scientific Attribution</h2>
+        </div>
+        <button id="model-info-close" class="modal-close-btn" title="Close (Esc)" aria-label="Close Modal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="info-section">
+          <div class="info-section-label">Operational System</div>
+          <p class="info-section-text">
+            High-Resolution Atmospheric &amp; Air Quality Forecasting System (WRF-Chem / ICON-ART dynamical-chemical modeling pipeline + WebGL visualization engine).
+          </p>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-label">Institutional Affiliation</div>
+          <p class="info-section-text">
+            Developed at the <strong>Qatar Environment and Energy Research Institute (QEERI)</strong>, <strong>Hamad Bin Khalifa University (HBKU)</strong>, Qatar Foundation.
+          </p>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-label">Scientific Lead &amp; Architecture</div>
+          <p class="info-section-text">
+            Principal Investigator &amp; System Architect: <strong>Dr. Sergey Osipov</strong> (Senior Scientist, QEERI)
+          </p>
+          <div class="lead-links">
+            <a href="mailto:sosipov@hbku.edu.qa" class="lead-link" title="Contact Lead PI">Contact</a>
+            <span class="attr-sep">&middot;</span>
+            <a href="https://orcid.org/" target="_blank" rel="noopener noreferrer" class="lead-link" title="ORCID Profile">ORCID</a>
+            <span class="attr-sep">&middot;</span>
+            <a href="https://scholar.google.com/citations?hl=en&amp;q=Sergey+Osipov" target="_blank" rel="noopener noreferrer" class="lead-link" title="Google Scholar Publications">Google Scholar</a>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-header-row">
+            <div class="info-section-label">Citation / Data Usage</div>
+            <button id="btn-copy-citation" class="copy-citation-btn" type="button" title="Copy Citation to Clipboard">Copy Citation</button>
+          </div>
+          <pre id="citation-text" class="citation-code">Osipov, S. (2026). Operational High-Resolution Atmospheric Chemistry &amp; Dust Forecasting System. Qatar Environment and Energy Research Institute (QEERI), Hamad Bin Khalifa University (HBKU).</pre>
+        </div>
+
+        <div class="info-section info-disclaimer">
+          <div class="info-section-label">Disclaimer</div>
+          <p class="info-section-text">
+            Experimental research forecast product provided by QEERI/HBKU; for official national weather warnings, please refer to the Qatar Meteorology Department.
+          </p>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Bottom Playback & Timeline Scrubbing Dock -->
-  <footer class="timeline-dock" aria-label="Playback Controls">
-    <div class="timeline-main-row">
-      <!-- Transport Buttons -->
-      <div class="transport-group">
-        <button id="btn-first" class="ctrl-btn" title="Jump to Start (Home)" aria-label="First Frame">&#x23EE;</button>
-        <button id="btn-prev" class="ctrl-btn" title="Step -1h (Left Arrow)" aria-label="Previous Frame">&#x23F4;</button>
-        <button id="btn-play" class="ctrl-btn play-btn" title="Play / Pause (Spacebar)" aria-label="Play or Pause">
-          <span id="play-icon">&#x25B6;</span>
-          <span id="play-label">Play</span>
+  <!-- Unified Bottom UI Stack (Model Selector + Legend + Attribution + Timeline) -->
+  <div class="bottom-ui-stack">
+    <div class="bottom-mid-row">
+      <!-- Windy-Style Model / Resolution Selector Bar -->
+      <div id="model-selector-bar" class="model-selector-bar" role="group" aria-label="Model Resolution Selector">
+        <button id="btn-model-auto" class="model-auto-btn active" type="button" title="Automatically switch forecast model as you zoom into Qatar / Doha">
+          <span class="auto-spark">&#x2728;</span>
+          <span>Auto</span>
         </button>
-        <button id="btn-next" class="ctrl-btn" title="Step +1h (Right Arrow)" aria-label="Next Frame">&#x23F5;</button>
-        <button id="btn-last" class="ctrl-btn" title="Jump to End (End)" aria-label="Last Frame">&#x23ED;</button>
+        <div id="model-pills-list" class="model-pills-list"></div>
       </div>
 
-      <!-- Scrub Track -->
-      <div class="scrub-track-wrap">
-        <div class="scrub-header">
-          <span id="scrub-valid-time" class="scrub-valid">Valid: -- UTC</span>
-          <span id="scrub-lead-time" class="scrub-lead">Lead: T+00</span>
+      <div class="bottom-right-stack">
+        <!-- Bottom-Right Colorbar / Legend Dock -->
+        <div id="legend-dock" class="legend-dock">
+          <div class="legend-title">
+            <span id="legend-var-title">PM2.5</span>
+            <span id="legend-var-units">[µg/m³]</span>
+          </div>
+          <div id="legend-gradient" class="legend-gradient"></div>
+          <div class="legend-ticks">
+            <span id="legend-min">0</span>
+            <span id="legend-max">250</span>
+          </div>
         </div>
-        <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="0" value="0" step="1" aria-label="Timeline Scrubber" />
-        <div id="timeline-ticks" class="timeline-ticks"></div>
-      </div>
 
-      <!-- Playback Options (Loop Mode & FPS) -->
-      <div class="playback-options">
-        <button id="btn-loop-mode" class="mode-btn" title="Toggle Loop Mode (L)">&#x1F501; Repeat</button>
-        <div class="fps-control">
-          <span>Speed:</span>
-          <strong id="fps-value" style="color:var(--accent-emerald);">4</strong>
-          <input type="range" id="fps-slider" class="fps-slider" min="1" max="10" value="4" step="1" aria-label="Animation FPS" />
+        <!-- Bottom-Right Scientific Attribution Bar & Model Info Trigger -->
+        <div id="attribution-bar" class="attribution-bar" role="contentinfo" aria-label="Scientific Attribution">
+          <span id="attr-lead-trigger" class="attr-interactive" role="button" tabindex="0" title="View System &amp; Scientific Attribution">Lead: Dr. Sergey Osipov</span>
+          <span class="attr-sep">&middot;</span>
+          <span class="attr-inst">QEERI / HBKU</span>
+          <span class="attr-sep">&middot;</span>
+          <span id="attr-info-trigger" class="attr-interactive" role="button" tabindex="0" title="Open Model Info &amp; Citation">&#x24D8; Model Info</span>
         </div>
       </div>
     </div>
-  </footer>
+
+    <!-- Bottom Playback & Timeline Scrubbing Dock -->
+    <footer class="timeline-dock" aria-label="Playback Controls">
+      <div class="timeline-main-row">
+        <!-- Transport Buttons -->
+        <div class="transport-group">
+          <button id="btn-first" class="ctrl-btn" title="Jump to Start (Home)" aria-label="First Frame">&#x23EE;</button>
+          <button id="btn-prev" class="ctrl-btn" title="Step -1h (Left Arrow)" aria-label="Previous Frame">&#x23F4;</button>
+          <button id="btn-play" class="ctrl-btn play-btn" title="Play / Pause (Spacebar)" aria-label="Play or Pause">
+            <span id="play-icon">&#x25B6;</span>
+            <span id="play-label">Play</span>
+          </button>
+          <button id="btn-next" class="ctrl-btn" title="Step +1h (Right Arrow)" aria-label="Next Frame">&#x23F5;</button>
+          <button id="btn-last" class="ctrl-btn" title="Jump to End (End)" aria-label="Last Frame">&#x23ED;</button>
+        </div>
+
+        <!-- Scrub Track -->
+        <div class="scrub-track-wrap">
+          <div class="scrub-header">
+            <span id="scrub-valid-time" class="scrub-valid">-- UTC</span>
+            <span id="scrub-lead-time" class="scrub-lead">Lead: T+000h</span>
+          </div>
+          <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="0" value="0" step="1" aria-label="Timeline Scrubber" />
+          <div id="timeline-ticks" class="timeline-ticks"></div>
+        </div>
+
+        <!-- Playback Options (Loop Mode & FPS) -->
+        <div class="playback-options">
+          <button id="btn-loop-mode" class="mode-btn" title="Toggle Loop Mode (L)">&#x1F501; Repeat</button>
+          <div class="fps-control">
+            <span>Speed:</span>
+            <strong id="fps-value" style="color:var(--accent-emerald);">4</strong>
+            <input type="range" id="fps-slider" class="fps-slider" min="1" max="10" value="4" step="1" aria-label="Animation FPS" />
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
 
   <script type="module" src="js/app.js"></script>
 </body>

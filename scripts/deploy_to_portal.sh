@@ -84,7 +84,7 @@ fi
 # 2. Locate Latest Model Output Directory if not specified
 if [ -z "${INPUT_DIR}" ]; then
     CANDIDATE_RUN_DIRS=(
-        "/scratch/sims/WRF_run/operational_forecast/ag_forecast_cycle/run"
+        "/scratch/sims/WRF_run/operational_forecast/ag_daily_1day_cycle/run"
         "/scratch/sims/WRF_run/operational_forecast/ag_weekly_7day_cycle/run"
         "/scratch/sims/WRF_run/operational_forecast/wrf_ag_2026_test/run"
     )
@@ -113,10 +113,14 @@ if [ -d "${REPO_DIR}/web/vendor" ]; then
 fi
 
 # 4. Execute dusty-export Binary Grid Pipeline
-echo "[Dusty Earth] Exporting binary Float32 grids from ${INPUT_DIR}..."
+echo "[Dusty Earth] Exporting binary Float32/Uint16 grids from ${INPUT_DIR}..."
 CMD=("${PYTHON_BIN}" -m dusty.cli -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -w "${WORKERS}")
 if [ -n "${CYCLE}" ]; then
     CMD+=(-c "${CYCLE}")
+fi
+PALM_RUN_ROOT="${PALM_RUN_ROOT:-${WORK_DIR:-/scratch/sims}/PALM_run/operational_forecast}"
+if [ -n "${PALM_RUN_ROOT}" ] && [ -d "${PALM_RUN_ROOT}" ]; then
+    CMD+=(--palm-root "${PALM_RUN_ROOT}")
 fi
 
 "${CMD[@]}"
@@ -134,7 +138,8 @@ if [ -d "${OUTPUT_DIR}/cycles" ] && [ "${RETENTION_DAYS}" -gt 0 ]; then
         done
 
         # Clean manifest.json atomically
-        "${PYTHON_BIN}" - "${OUTPUT_DIR}/manifest.json" "${OUTPUT_DIR}/cycles" << 'PYEOF'
+    fi
+    "${PYTHON_BIN}" - "${OUTPUT_DIR}/manifest.json" "${OUTPUT_DIR}/cycles" << 'PYEOF'
 import json, sys
 from pathlib import Path
 mpath = Path(sys.argv[1])
@@ -150,7 +155,6 @@ if mpath.exists():
         json.dump(data, f, indent=2)
     tmp.replace(mpath)
 PYEOF
-    fi
 fi
 
 echo "[Dusty Earth] Stage 4 Deployment complete: ${OUTPUT_DIR}/manifest.json"

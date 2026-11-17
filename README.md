@@ -151,3 +151,11 @@ Dusty Earth includes an automated end-to-end synthetic test suite verifying bina
 ```bash
 python tests/test_dusty_export.py
 ```
+
+---
+
+## Future Improvements & Roadmap
+
+- **Lateral Boundary Relaxation Zone Switch / Diagnostic View**:
+  - By design, `dusty-export` exports the full model grid (`0..nx-1`, `0..ny-1`) including the WRF lateral boundary sponge/relaxation zone (`spec_bdy_width = 5`: `1` specified cell + `4` relaxation cells) so boundary conditions can be diagnosed internally.
+  - **Planned Feature**: Add a UI toggle (or a dedicated diagnostic view/page) allowing users to dynamically show or hide/mask the lateral boundary relaxation zone (`spec_bdy_width = 5`) on the WebGL canvas.
