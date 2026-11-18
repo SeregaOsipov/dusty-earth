@@ -840,6 +840,12 @@ select.cycle-dropdown:focus {
   color: var(--text-secondary);
 }
 
+#fps-value {
+  min-width: 3.1rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .fps-slider {
   width: 60px;
   accent-color: var(--accent-emerald);

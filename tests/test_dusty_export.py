@@ -109,6 +109,8 @@ def create_synthetic_wrfout(
         times_chars.append(np.array([c.encode("ascii") for c in s], dtype="|S1"))
 
     no2 = np.full((nt, 2, ny, nx), 0.015, dtype=np.float32)
+    co2 = np.full((nt, 2, ny, nx), 432.5, dtype=np.float32)
+    ch4 = np.full((nt, 2, ny, nx), 2.15, dtype=np.float32)
     t2 = np.full((nt, ny, nx), 298.15, dtype=np.float32)
     u10 = np.full((nt, ny, nx), 4.0, dtype=np.float32)
     v10 = np.full((nt, ny, nx), -3.0, dtype=np.float32)
@@ -119,6 +121,8 @@ def create_synthetic_wrfout(
             "XLAT": (("Time", "south_north", "west_east"), np.broadcast_to(lat2d, (nt, ny, nx)).astype(np.float32)),
             "XLONG": (("Time", "south_north", "west_east"), np.broadcast_to(lon2d, (nt, ny, nx)).astype(np.float32)),
             "no2": (("Time", "bottom_top", "south_north", "west_east"), no2, {"units": "ppmv"}),
+            "co2": (("Time", "bottom_top", "south_north", "west_east"), co2, {"units": "ppmv"}),
+            "ch4": (("Time", "bottom_top", "south_north", "west_east"), ch4, {"units": "ppmv"}),
             "T2": (("Time", "south_north", "west_east"), t2, {"units": "K"}),
             "U10": (("Time", "south_north", "west_east"), u10, {"units": "m s-1"}),
             "V10": (("Time", "south_north", "west_east"), v10, {"units": "m s-1"}),
@@ -347,6 +351,13 @@ def test_multidomain_15min_and_config_agnostic_palm() -> None:
         wrf_steps = models[0]["timesteps"]
         assert [t["lead_seconds"] for t in wrf_steps] == [0, 900, 1800, 2700, 3600]
         assert [t["lead_label"] for t in wrf_steps] == ["T+00", "T+00:15", "T+00:30", "T+00:45", "T+01"]
+
+        # Verify GHGs tab variables (co2 ppm & ch4 ppbv converted from ppmv)
+        wrf_vars = {v["id"]: v for v in models[0]["variables"]}
+        assert "co2" in wrf_vars and wrf_vars["co2"]["category"] == "ghg" and wrf_vars["co2"]["units"] == "ppm"
+        assert "ch4" in wrf_vars and wrf_vars["ch4"]["category"] == "ghg" and wrf_vars["ch4"]["units"] == "ppbv"
+        assert abs(wrf_steps[0]["stats"]["co2"]["mean"] - 432.5) < 0.5
+        assert abs(wrf_steps[0]["stats"]["ch4"]["mean"] - 2150.0) < 5.0
 
         # Verify PALM NaN building cutout, native quad, dissolved 3D buildings, and canopy
         palm_1m = models[-1]

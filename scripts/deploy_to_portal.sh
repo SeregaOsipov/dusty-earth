@@ -152,7 +152,7 @@ if mpath.exists():
     data["default_cycle"] = kept[0]["id"] if kept else None
     tmp = mpath.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, separators=(",", ":"))
     tmp.replace(mpath)
 PYEOF
 fi

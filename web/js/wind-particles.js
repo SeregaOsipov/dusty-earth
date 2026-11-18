@@ -29,33 +29,57 @@ export class WindParticles {
     this.animId = null;
 
     this.cache = new Map(); // url -> Float32Array
+    this.inFlight = new Map(); // url -> Promise<Float32Array>
     this.maxCacheEntries = 240;
+    this.maxCacheBytes = 128 * 1024 * 1024; // 128 MB byte budget for 1m/10m grids
+    this.cachedBytes = 0;
   }
 
   async loadBuffer(url, fileEntry = null, component = "u") {
     if (this.cache.has(url)) {
-      return this.cache.get(url);
+      const cached = this.cache.get(url);
+      this.cache.delete(url);
+      this.cache.set(url, cached);
+      return cached;
     }
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch wind component: ${url}`);
+    if (this.inFlight.has(url)) {
+      return this.inFlight.get(url);
     }
-    const buf = await res.arrayBuffer();
-    let wrappedEntry = null;
-    if (fileEntry && fileEntry.encoding === "uint16") {
-      wrappedEntry = {
-        encoding: "uint16",
-        qmin: component === "u" ? fileEntry.u_qmin : fileEntry.v_qmin,
-        qmax: component === "u" ? fileEntry.u_qmax : fileEntry.v_qmax,
-      };
-    }
-    const f32 = decodeFieldBuffer(buf, wrappedEntry);
-    if (this.cache.size >= this.maxCacheEntries) {
-      const oldestKey = this.cache.keys().next().value;
-      if (oldestKey !== undefined) this.cache.delete(oldestKey);
-    }
-    this.cache.set(url, f32);
-    return f32;
+
+    const promise = (async () => {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch wind component: ${url}`);
+      }
+      const buf = await res.arrayBuffer();
+      let wrappedEntry = null;
+      if (fileEntry && fileEntry.encoding === "uint16") {
+        wrappedEntry = {
+          encoding: "uint16",
+          qmin: component === "u" ? fileEntry.u_qmin : fileEntry.v_qmin,
+          qmax: component === "u" ? fileEntry.u_qmax : fileEntry.v_qmax,
+        };
+      }
+      const f32 = decodeFieldBuffer(buf, wrappedEntry);
+      while (
+        this.cache.size >= this.maxCacheEntries ||
+        (this.cachedBytes + f32.byteLength > this.maxCacheBytes && this.cache.size > 0)
+      ) {
+        const oldestKey = this.cache.keys().next().value;
+        if (oldestKey === undefined) break;
+        const oldestBuf = this.cache.get(oldestKey);
+        this.cache.delete(oldestKey);
+        if (oldestBuf) this.cachedBytes = Math.max(0, this.cachedBytes - oldestBuf.byteLength);
+      }
+      this.cache.set(url, f32);
+      this.cachedBytes += f32.byteLength;
+      return f32;
+    })().finally(() => {
+      this.inFlight.delete(url);
+    });
+
+    this.inFlight.set(url, promise);
+    return promise;
   }
 
   async setWindField(uUrlOrEntry, vUrlOrGridMeta, maybeGridMeta = null) {

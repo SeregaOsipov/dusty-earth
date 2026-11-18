@@ -216,10 +216,10 @@
         <!-- Playback Options (Loop Mode & FPS) -->
         <div class="playback-options">
           <button id="btn-loop-mode" class="mode-btn" title="Toggle Loop Mode (L)">&#x1F501; Repeat</button>
-          <div class="fps-control">
+          <div class="fps-control" id="speed-control-wrap" title="Forecast playback speed (simulated hours per real second)">
             <span>Speed:</span>
-            <strong id="fps-value" style="color:var(--accent-emerald);">4</strong>
-            <input type="range" id="fps-slider" class="fps-slider" min="1" max="10" value="4" step="1" aria-label="Animation FPS" />
+            <strong id="fps-value" style="color:var(--accent-emerald);">3h/s</strong>
+            <input type="range" id="fps-slider" class="fps-slider" min="0.25" max="8" value="3" step="0.25" aria-label="Forecast Animation Speed (hours per second)" />
           </div>
         </div>
       </div>

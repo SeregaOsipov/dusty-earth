@@ -24,6 +24,8 @@ class DustyApp {
     this._progMoveTimer = null;
     this._autoTilted = false;
     this._lastBoundsSig = null;
+    this._timestepTicket = 0;
+    this._lastWindUpdateMs = 0;
 
     this.mapEngine = new MapEngine("map");
     this.scalarLayer = null;
@@ -323,8 +325,7 @@ class DustyApp {
     const model = modelIndex >= 0 ? this.activeCycle.models[modelIndex] : this.activeCycle.models[0];
     if (!model) return;
 
-    const previousTs = this.timeline ? this.timeline.getCurrentTimestep() : null;
-    const targetUtc = previousTs ? previousTs.valid_time : null;
+    const targetUtc = this.timeline ? this.timeline.getPlayheadIso() : null;
     const wasSameModel = this.activeModel && this.activeModel.id === model.id;
 
     if (!wasSameModel && this.activeModel) {
@@ -392,8 +393,11 @@ class DustyApp {
     }
 
     this.timeline.setTimesteps(model.timesteps || [], false, this.activeCycle.init_time);
-    const nearestIdx = targetUtc ? this.timeline.findNearestIndexForUtc(targetUtc) : 0;
-    this.timeline.goTo(nearestIdx, false);
+    if (targetUtc) {
+      this.timeline.syncToUtc(targetUtc, false);
+    } else {
+      this.timeline.goTo(0, false);
+    }
 
     this._syncModelSelectorUI();
 
@@ -498,6 +502,8 @@ class DustyApp {
       o3: "⚡",
       so2: "🏭",
       co: "💨",
+      co2: "🌍",
+      ch4: "🔥",
       wind10m: "💨",
       t2m: "🌡️",
       precip_rate: "🌧️",
@@ -510,6 +516,7 @@ class DustyApp {
     const categoryMeta = [
       { key: "particulates", label: "Particulates & Dust", match: (c) => c === "aerosol" || c === "dust" },
       { key: "chemistry", label: "Trace Gases", match: (c) => c === "chemistry" },
+      { key: "ghg", label: "GHGs", match: (c) => c === "ghg" },
       { key: "meteo", label: "Meteorology", match: (c) => c === "meteo" },
       { key: "solar", label: "Solar Energy", match: (c) => c === "solar" },
     ];
@@ -540,6 +547,13 @@ class DustyApp {
 
       if (cat.key === "particulates") {
         const order = ["pm25", "pm10", "sconc_dust", "dust_load", "dod550"];
+        groupVars.sort((a, b) => {
+          const ia = order.indexOf(a.id);
+          const ib = order.indexOf(b.id);
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        });
+      } else if (cat.key === "ghg") {
+        const order = ["co2", "ch4"];
         groupVars.sort((a, b) => {
           const ia = order.indexOf(a.id);
           const ib = order.indexOf(b.id);
@@ -630,25 +644,47 @@ class DustyApp {
   async loadTimestep(timestep) {
     if (!timestep || !this.activeModel || !this.activeVariable) return;
 
+    const ticket = ++this._timestepTicket;
     const gridMeta = this.activeModel.grid;
+    const activeVar = this.activeVariable;
+    const varFiles = timestep.files[activeVar.id];
+    const windFiles = this.showWindOverlay ? timestep.files["wind10m"] : null;
 
-    const varFiles = timestep.files[this.activeVariable.id];
     if (varFiles && varFiles.scalar) {
       try {
-        await this.scalarLayer.setField(varFiles, gridMeta, this.activeVariable);
+        await this.scalarLayer.loadBuffer(varFiles.scalar, varFiles);
+        if (ticket !== this._timestepTicket) return;
+        await this.scalarLayer.setField(varFiles, gridMeta, activeVar);
       } catch (err) {
+        if (ticket !== this._timestepTicket) return;
         console.warn("[Dusty Earth] Failed to load scalar frame:", err);
       }
     } else {
       this.scalarLayer.clear();
     }
 
-    if (this.showWindOverlay) {
-      const windFiles = timestep.files["wind10m"];
+    if (ticket !== this._timestepTicket) return;
+
+    const isHighFreqPlay = Boolean(
+      this.timeline &&
+      this.timeline.isPlaying &&
+      this.timeline.getStepIntervalSeconds() <= 120
+    );
+    const nowMs = performance.now();
+    const allowWindTick = !isHighFreqPlay || (nowMs - (this._lastWindUpdateMs || 0) >= 90);
+
+    if (this.showWindOverlay && allowWindTick) {
       if (windFiles && windFiles.u && windFiles.v) {
         try {
+          await Promise.all([
+            this.windParticles.loadBuffer(windFiles.u, windFiles, "u"),
+            this.windParticles.loadBuffer(windFiles.v, windFiles, "v"),
+          ]);
+          if (ticket !== this._timestepTicket) return;
+          this._lastWindUpdateMs = performance.now();
           await this.windParticles.setWindField(windFiles, gridMeta);
         } catch (err) {
+          if (ticket !== this._timestepTicket) return;
           console.warn("[Dusty Earth] Failed to load wind field:", err);
         }
       } else {
@@ -657,25 +693,43 @@ class DustyApp {
       }
     }
 
-    this._preloadUpcomingFrames();
+    if (ticket === this._timestepTicket) {
+      this._preloadUpcomingFrames();
+    }
   }
 
   _preloadUpcomingFrames() {
-    if (!this.timeline || !this.timeline.timesteps || !this.activeVariable) return;
+    if (!this.timeline || !this.timeline.timesteps || !this.activeVariable || !this.activeModel) return;
     const timesteps = this.timeline.timesteps;
-    const curr = this.timeline.currentIndex;
+    if (timesteps.length <= 1) return;
 
-    for (let offset = 1; offset <= 3; offset++) {
-      const idx = (curr + offset) % timesteps.length;
+    const activeFetches =
+      (this.scalarLayer.inFlight ? this.scalarLayer.inFlight.size : 0) +
+      (this.windParticles && this.windParticles.inFlight ? this.windParticles.inFlight.size : 0);
+    if (activeFetches >= 4) return;
+
+    const curr = this.timeline.currentIndex;
+    const grid = this.activeModel.grid || {};
+    const cells = (grid.nx || 0) * (grid.ny || 0);
+    const dtSec = Math.max(1, this.timeline.getStepIntervalSeconds());
+    const stride = this.timeline.isPlaying
+      ? Math.max(1, Math.floor((this.timeline.getEffectiveSimSecondsPerRealSec() / 60) / dtSec))
+      : 1;
+    const lookahead = cells > 1_000_000 ? 3 : 6;
+
+    for (let k = 1; k <= lookahead; k++) {
+      const idx = (curr + k * stride) % timesteps.length;
       const ts = timesteps[idx];
       const vf = ts.files[this.activeVariable.id];
       if (vf && vf.scalar) {
         this.scalarLayer.loadBuffer(vf.scalar, vf).catch(() => {});
       }
-      const wf = ts.files["wind10m"];
-      if (wf && wf.u && wf.v) {
-        this.windParticles.loadBuffer(wf.u, wf, "u").catch(() => {});
-        this.windParticles.loadBuffer(wf.v, wf, "v").catch(() => {});
+      if (k <= 3 && this.showWindOverlay) {
+        const wf = ts.files["wind10m"];
+        if (wf && wf.u && wf.v) {
+          this.windParticles.loadBuffer(wf.u, wf, "u").catch(() => {});
+          this.windParticles.loadBuffer(wf.v, wf, "v").catch(() => {});
+        }
       }
     }
   }

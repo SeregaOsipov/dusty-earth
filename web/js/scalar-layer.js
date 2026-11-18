@@ -41,10 +41,16 @@ export class ScalarLayer {
     this.mapEngine = maybeMapEngine || canvasOrMapEngine;
 
     this.cache = new Map(); // url -> Float32Array
+    this.inFlight = new Map(); // url -> Promise<Float32Array>
     this.maxCacheEntries = 240;
+    this.maxCacheBytes = 256 * 1024 * 1024; // 256 MB byte budget for 1m/10m grids
+    this.cachedBytes = 0;
     this.currentBuffer = null;
     this.gridMeta = null;
     this.varConfig = null;
+    this._imageData = null;
+    this._imageData32 = null;
+    this._maxTexSize = null;
 
     this.offscreenCanvas = document.createElement("canvas");
     this.offscreenCanvas.width = 1;
@@ -292,20 +298,41 @@ export class ScalarLayer {
 
   async loadBuffer(url, fileEntry = null) {
     if (this.cache.has(url)) {
-      return this.cache.get(url);
+      const cached = this.cache.get(url);
+      this.cache.delete(url);
+      this.cache.set(url, cached);
+      return cached;
     }
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch binary grid: ${response.statusText} (${url})`);
+    if (this.inFlight.has(url)) {
+      return this.inFlight.get(url);
     }
-    const arrayBuffer = await response.arrayBuffer();
-    const float32 = decodeFieldBuffer(arrayBuffer, fileEntry);
-    if (this.cache.size >= this.maxCacheEntries) {
-      const oldestKey = this.cache.keys().next().value;
-      if (oldestKey !== undefined) this.cache.delete(oldestKey);
-    }
-    this.cache.set(url, float32);
-    return float32;
+
+    const promise = (async () => {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch binary grid: ${response.statusText} (${url})`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const float32 = decodeFieldBuffer(arrayBuffer, fileEntry);
+      while (
+        this.cache.size >= this.maxCacheEntries ||
+        (this.cachedBytes + float32.byteLength > this.maxCacheBytes && this.cache.size > 0)
+      ) {
+        const oldestKey = this.cache.keys().next().value;
+        if (oldestKey === undefined) break;
+        const oldestBuf = this.cache.get(oldestKey);
+        this.cache.delete(oldestKey);
+        if (oldestBuf) this.cachedBytes = Math.max(0, this.cachedBytes - oldestBuf.byteLength);
+      }
+      this.cache.set(url, float32);
+      this.cachedBytes += float32.byteLength;
+      return float32;
+    })().finally(() => {
+      this.inFlight.delete(url);
+    });
+
+    this.inFlight.set(url, promise);
+    return promise;
   }
 
   async setField(urlOrEntry, gridMeta, varConfig) {
@@ -385,40 +412,86 @@ export class ScalarLayer {
     }
   }
 
+  _getMaxTextureSize() {
+    if (this._maxTexSize) return this._maxTexSize;
+    const gl = this.mapEngine && this.mapEngine.map && this.mapEngine.map.painter && this.mapEngine.map.painter.context
+      ? this.mapEngine.map.painter.context.gl
+      : null;
+    if (gl && typeof gl.getParameter === "function") {
+      const hw = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE));
+      if (Number.isFinite(hw) && hw >= 1024) {
+        this._maxTexSize = Math.max(2048, Math.min(8192, hw));
+        return this._maxTexSize;
+      }
+    }
+    this._maxTexSize = 4096;
+    return this._maxTexSize;
+  }
+
   _generateTexture(buffer, gridMeta, varConfig) {
     const nx = gridMeta.nx;
     const ny = gridMeta.ny;
+    const maxTex = this._getMaxTextureSize();
+    const stride = Math.max(1, Math.ceil(Math.max(nx, ny) / maxTex));
+    const texW = Math.ceil(nx / stride);
+    const texH = Math.ceil(ny / stride);
 
-    if (this.offscreenCanvas.width !== nx || this.offscreenCanvas.height !== ny) {
-      this.offscreenCanvas.width = nx;
-      this.offscreenCanvas.height = ny;
+    if (
+      this.offscreenCanvas.width !== texW ||
+      this.offscreenCanvas.height !== texH ||
+      !this._imageData
+    ) {
+      this.offscreenCanvas.width = texW;
+      this.offscreenCanvas.height = texH;
+      this._imageData = this.offscreenCtx.createImageData(texW, texH);
+      this._imageData32 = new Uint32Array(this._imageData.data.buffer);
     }
 
-    const imgData = this.offscreenCtx.createImageData(nx, ny);
-    const data32 = new Uint32Array(imgData.data.buffer);
+    const data32 = this._imageData32;
     const lut32 = new Uint32Array(this.lut.buffer);
 
     const vmin = varConfig.vmin;
     const vmax = varConfig.vmax;
     const range = vmax - vmin || 1.0;
-    const len = nx * ny;
 
-    for (let i = 0; i < len; i++) {
-      const val = buffer[i];
-      if (Number.isNaN(val)) {
-        data32[i] = 0;
-      } else if (val <= vmin) {
-        data32[i] = lut32[0];
-      } else if (val >= vmax) {
-        data32[i] = lut32[255];
-      } else {
-        const norm = (val - vmin) / range;
-        const lutIdx = Math.min(255, Math.max(0, (norm * 255.0) | 0));
-        data32[i] = lut32[lutIdx];
+    if (stride === 1) {
+      const len = nx * ny;
+      for (let i = 0; i < len; i++) {
+        const val = buffer[i];
+        if (Number.isNaN(val)) {
+          data32[i] = 0;
+        } else if (val <= vmin) {
+          data32[i] = lut32[0];
+        } else if (val >= vmax) {
+          data32[i] = lut32[255];
+        } else {
+          const norm = (val - vmin) / range;
+          const lutIdx = Math.min(255, Math.max(0, (norm * 255.0) | 0));
+          data32[i] = lut32[lutIdx];
+        }
+      }
+    } else {
+      let outIdx = 0;
+      for (let r = 0; r < ny; r += stride) {
+        const rowOffset = r * nx;
+        for (let c = 0; c < nx; c += stride) {
+          const val = buffer[rowOffset + c];
+          if (Number.isNaN(val)) {
+            data32[outIdx++] = 0;
+          } else if (val <= vmin) {
+            data32[outIdx++] = lut32[0];
+          } else if (val >= vmax) {
+            data32[outIdx++] = lut32[255];
+          } else {
+            const norm = (val - vmin) / range;
+            const lutIdx = Math.min(255, Math.max(0, (norm * 255.0) | 0));
+            data32[outIdx++] = lut32[lutIdx];
+          }
+        }
       }
     }
 
-    this.offscreenCtx.putImageData(imgData, 0, 0);
+    this.offscreenCtx.putImageData(this._imageData, 0, 0);
   }
 
   render() {

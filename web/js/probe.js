@@ -151,7 +151,14 @@ export class WeatherProbe {
     if (scalarVal !== null && this.activeVarConfig) {
       const units = this.activeVarConfig.units || "";
       const name = this.activeVarConfig.short_name || this.activeVarConfig.name;
-      const formatted = scalarVal >= 100 ? scalarVal.toFixed(0) : scalarVal >= 10 ? scalarVal.toFixed(1) : scalarVal.toFixed(2);
+      const formatted =
+        this.activeVarConfig.id === "co2"
+          ? scalarVal.toFixed(1)
+          : scalarVal >= 100
+          ? scalarVal.toFixed(0)
+          : scalarVal >= 10
+          ? scalarVal.toFixed(1)
+          : scalarVal.toFixed(2);
       this.scalarEl.textContent = `${name}: ${formatted} ${units}`;
       this.scalarEl.style.display = "block";
     } else if (isMicroMask) {

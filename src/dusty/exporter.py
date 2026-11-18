@@ -10,6 +10,7 @@ import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -30,6 +31,7 @@ from .grid_extractor import (
 
 
 QUANTIZE_CELL_THRESHOLD = 1_000_000
+QUANTIZE_TOTAL_CELL_STEPS_THRESHOLD = 40_000_000
 
 
 @dataclass
@@ -509,8 +511,13 @@ def _write_array_bin(arr: np.ndarray, out_path: Path, use_uint16: bool) -> Dict[
     }
 
 
-def _export_timestep_task(
-    file_path: str,
+def _process_open_timestep(
+    *,
+    ds: xr.Dataset,
+    regrid_cache: Any,
+    aux_ds: Optional[xr.Dataset],
+    aux_cache: Any,
+    static_ds: Optional[xr.Dataset],
     time_idx: int,
     cycle_id: str,
     model_id: str,
@@ -519,12 +526,11 @@ def _export_timestep_task(
     primary_var_configs: List[VariableConfig],
     aux_var_configs: List[VariableConfig],
     output_dir: str,
-    aux_file_path: Optional[str] = None,
     aux_time_idx: Optional[int] = None,
-    static_file_path: Optional[str] = None,
     use_uint16: bool = False,
+    include_stats: bool = True,
 ) -> Dict[str, Any]:
-    """Worker task that extracts and writes binary buffers for a single model timestep."""
+    """Extract and write binary buffers for one open timestep using cached NetCDF handles."""
     out_dir_path = Path(output_dir)
     lead_minutes = round(lead_seconds / 60.0, 2)
     raw_hours = lead_seconds / 3600.0
@@ -539,78 +545,172 @@ def _export_timestep_task(
         "lead_label": lead_label,
         "valid_time": valid_iso,
         "files": {},
-        "stats": {},
     }
+    if include_stats:
+        timestep_entry["stats"] = {}
 
-    static_ds = open_dataset_safe(static_file_path) if static_file_path else None
-    try:
-        with open_dataset_safe(file_path) as ds:
-            regrid_cache = get_regrid_cache(ds, static_ds=static_ds)
-            for var_cfg in primary_var_configs:
-                try:
-                    extracted = extract_variable_field(
-                        ds,
-                        var_cfg,
-                        time_idx=time_idx,
-                        regrid_cache=regrid_cache,
-                        static_ds=static_ds,
-                    )
-                except Exception:
-                    continue
+    for var_cfg in primary_var_configs:
+        try:
+            extracted = extract_variable_field(
+                ds,
+                var_cfg,
+                time_idx=time_idx,
+                regrid_cache=regrid_cache,
+                static_ds=static_ds,
+            )
+        except Exception:
+            continue
 
-                var_dir = out_dir_path / "cycles" / cycle_id / model_id / var_cfg.id
-                scalar_rel = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{file_stem}"
-                enc_meta = _write_array_bin(extracted.scalar, var_dir / file_stem, use_uint16=use_uint16)
+        var_dir = out_dir_path / "cycles" / cycle_id / model_id / var_cfg.id
+        scalar_rel = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{file_stem}"
+        enc_meta = _write_array_bin(extracted.scalar, var_dir / file_stem, use_uint16=use_uint16)
 
-                file_entry: Dict[str, Any] = {"scalar": scalar_rel, **enc_meta}
-                if var_cfg.is_vector and extracted.u is not None and extracted.v is not None:
-                    u_name = f"s{lead_seconds:06d}_u.bin"
-                    v_name = f"s{lead_seconds:06d}_v.bin"
-                    u_enc = _write_array_bin(extracted.u, var_dir / u_name, use_uint16=use_uint16)
-                    v_enc = _write_array_bin(extracted.v, var_dir / v_name, use_uint16=use_uint16)
-                    file_entry["u"] = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{u_name}"
-                    file_entry["v"] = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{v_name}"
-                    if use_uint16:
-                        file_entry["u_qmin"] = u_enc["qmin"]
-                        file_entry["u_qmax"] = u_enc["qmax"]
-                        file_entry["v_qmin"] = v_enc["qmin"]
-                        file_entry["v_qmax"] = v_enc["qmax"]
+        file_entry: Dict[str, Any] = {"scalar": scalar_rel, **enc_meta}
+        if var_cfg.is_vector and extracted.u is not None and extracted.v is not None:
+            u_name = f"s{lead_seconds:06d}_u.bin"
+            v_name = f"s{lead_seconds:06d}_v.bin"
+            u_enc = _write_array_bin(extracted.u, var_dir / u_name, use_uint16=use_uint16)
+            v_enc = _write_array_bin(extracted.v, var_dir / v_name, use_uint16=use_uint16)
+            file_entry["u"] = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{u_name}"
+            file_entry["v"] = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{v_name}"
+            if use_uint16:
+                file_entry["u_qmin"] = u_enc["qmin"]
+                file_entry["u_qmax"] = u_enc["qmax"]
+                file_entry["v_qmin"] = v_enc["qmin"]
+                file_entry["v_qmax"] = v_enc["qmax"]
 
-                timestep_entry["files"][var_cfg.id] = file_entry
+        timestep_entry["files"][var_cfg.id] = file_entry
+        if include_stats:
+            timestep_entry["stats"][var_cfg.id] = {
+                "min": extracted.min_val,
+                "max": extracted.max_val,
+                "mean": extracted.mean_val,
+            }
+
+    if aux_var_configs and aux_ds is not None and aux_time_idx is not None:
+        for var_cfg in aux_var_configs:
+            try:
+                extracted = extract_variable_field(
+                    aux_ds,
+                    var_cfg,
+                    time_idx=aux_time_idx,
+                    regrid_cache=aux_cache,
+                    static_ds=static_ds,
+                )
+            except Exception:
+                continue
+            var_dir = out_dir_path / "cycles" / cycle_id / model_id / var_cfg.id
+            scalar_rel = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{file_stem}"
+            enc_meta = _write_array_bin(extracted.scalar, var_dir / file_stem, use_uint16=use_uint16)
+            timestep_entry["files"][var_cfg.id] = {"scalar": scalar_rel, **enc_meta}
+            if include_stats:
                 timestep_entry["stats"][var_cfg.id] = {
                     "min": extracted.min_val,
                     "max": extracted.max_val,
                     "mean": extracted.mean_val,
                 }
 
-        if aux_var_configs and aux_file_path and aux_time_idx is not None:
-            with open_dataset_safe(aux_file_path) as aux_ds:
-                aux_cache = get_regrid_cache(aux_ds, static_ds=static_ds)
-                for var_cfg in aux_var_configs:
-                    try:
-                        extracted = extract_variable_field(
-                            aux_ds,
-                            var_cfg,
-                            time_idx=aux_time_idx,
-                            regrid_cache=aux_cache,
-                            static_ds=static_ds,
-                        )
-                    except Exception:
-                        continue
-                    var_dir = out_dir_path / "cycles" / cycle_id / model_id / var_cfg.id
-                    scalar_rel = f"cycles/{cycle_id}/{model_id}/{var_cfg.id}/{file_stem}"
-                    enc_meta = _write_array_bin(extracted.scalar, var_dir / file_stem, use_uint16=use_uint16)
-                    timestep_entry["files"][var_cfg.id] = {"scalar": scalar_rel, **enc_meta}
-                    timestep_entry["stats"][var_cfg.id] = {
-                        "min": extracted.min_val,
-                        "max": extracted.max_val,
-                        "mean": extracted.mean_val,
-                    }
-    finally:
-        if static_ds is not None:
-            static_ds.close()
-
     return timestep_entry
+
+
+def _export_timestep_batch_task(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Worker batch task that reuses open NetCDF datasets and KDTree caches across frames."""
+    if not batch:
+        return []
+    open_primary: Dict[str, Tuple[xr.Dataset, Any]] = {}
+    open_aux: Dict[str, Tuple[xr.Dataset, Any]] = {}
+    open_static: Dict[str, xr.Dataset] = {}
+    results: List[Dict[str, Any]] = []
+
+    try:
+        for t in batch:
+            s_path = t.get("static_file_path")
+            static_ds = None
+            if s_path:
+                static_ds = open_static.get(s_path)
+                if static_ds is None:
+                    static_ds = open_dataset_safe(s_path)
+                    open_static[s_path] = static_ds
+
+            f_path = t["file_path"]
+            if f_path not in open_primary:
+                pds = open_dataset_safe(f_path)
+                open_primary[f_path] = (pds, get_regrid_cache(pds, static_ds=static_ds))
+            pds, pcache = open_primary[f_path]
+
+            a_path = t.get("aux_file_path")
+            aux_ds = None
+            aux_cache = None
+            if a_path and t.get("aux_var_configs") and t.get("aux_time_idx") is not None:
+                if a_path not in open_aux:
+                    ads = open_dataset_safe(a_path)
+                    open_aux[a_path] = (ads, get_regrid_cache(ads, static_ds=static_ds))
+                aux_ds, aux_cache = open_aux[a_path]
+
+            results.append(
+                _process_open_timestep(
+                    ds=pds,
+                    regrid_cache=pcache,
+                    aux_ds=aux_ds,
+                    aux_cache=aux_cache,
+                    static_ds=static_ds,
+                    time_idx=t["time_idx"],
+                    cycle_id=t["cycle_id"],
+                    model_id=t["model_id"],
+                    lead_seconds=t["lead_seconds"],
+                    valid_iso=t["valid_iso"],
+                    primary_var_configs=t["primary_var_configs"],
+                    aux_var_configs=t["aux_var_configs"],
+                    output_dir=t["output_dir"],
+                    aux_time_idx=t.get("aux_time_idx"),
+                    use_uint16=bool(t.get("use_uint16", False)),
+                    include_stats=bool(t.get("include_stats", True)),
+                )
+            )
+    finally:
+        for ds, _ in open_primary.values():
+            ds.close()
+        for ds, _ in open_aux.values():
+            ds.close()
+        for ds in open_static.values():
+            ds.close()
+
+    return results
+
+
+def _export_timestep_task(
+    file_path: str,
+    time_idx: int,
+    cycle_id: str,
+    model_id: str,
+    lead_seconds: int,
+    valid_iso: str,
+    primary_var_configs: List[VariableConfig],
+    aux_var_configs: List[VariableConfig],
+    output_dir: str,
+    aux_file_path: Optional[str] = None,
+    aux_time_idx: Optional[int] = None,
+    static_file_path: Optional[str] = None,
+    use_uint16: bool = False,
+    include_stats: bool = True,
+) -> Dict[str, Any]:
+    """Worker task that extracts and writes binary buffers for a single model timestep."""
+    return _export_timestep_batch_task([{
+        "file_path": file_path,
+        "time_idx": time_idx,
+        "cycle_id": cycle_id,
+        "model_id": model_id,
+        "lead_seconds": lead_seconds,
+        "valid_iso": valid_iso,
+        "primary_var_configs": primary_var_configs,
+        "aux_var_configs": aux_var_configs,
+        "output_dir": output_dir,
+        "aux_file_path": aux_file_path,
+        "aux_time_idx": aux_time_idx,
+        "static_file_path": static_file_path,
+        "use_uint16": use_uint16,
+        "include_stats": include_stats,
+    }])[0]
 
 
 def export_forecast(
@@ -627,7 +727,7 @@ def export_forecast(
     Main multi-model export engine:
       1. Discovers WRF nested domains, PALM-4U LES simulations, or generic NetCDFs.
       2. Matches valid variables per model against registry (filtering all-NaN dummies).
-      3. Uses ProcessPoolExecutor to dump Float32 / Uint16 binary buffers at native timesteps.
+      3. Uses ProcessPoolExecutor batches to dump Float32 / Uint16 binary buffers at native timesteps.
       4. Compiles and updates manifest.json with backward-compatible top-level defaults + models[].
     """
     reg = registry or VariableRegistry()
@@ -700,15 +800,6 @@ def export_forecast(
             if static_ds is not None:
                 static_ds.close()
 
-        use_uint16 = (grid_meta.nx * grid_meta.ny) > QUANTIZE_CELL_THRESHOLD
-        encoding_label = "uint16" if use_uint16 else "float32"
-
-        print(
-            f"[Dusty Earth] [{sp.id}] {sp.name}: grid={grid_meta.nx}x{grid_meta.ny} ({grid_meta.dx_m:.1f} m, {encoding_label}), "
-            f"lon=[{grid_meta.lon_min:.4f}, {grid_meta.lon_max:.4f}], lat=[{grid_meta.lat_min:.4f}, {grid_meta.lat_max:.4f}], "
-            f"vars={len(all_model_vars)}"
-        )
-
         aux_timestamps: List[datetime] = []
         if aux_vars and sp.aux_file is not None:
             with open_dataset_safe(sp.aux_file) as aux_ds:
@@ -745,19 +836,36 @@ def export_forecast(
                         "aux_file_path": str(sp.aux_file) if sp.aux_file else None,
                         "aux_time_idx": aux_idx,
                         "static_file_path": str(sp.static_file) if sp.static_file else None,
-                        "use_uint16": use_uint16,
                     })
 
-        print(f"[Dusty Earth] [{sp.id}] Processing {len(tasks)} timestep(s) using {workers} worker(s)...")
+        n_tasks = len(tasks)
+        total_cell_steps = grid_meta.nx * grid_meta.ny * max(1, n_tasks)
+        use_uint16 = (
+            (grid_meta.nx * grid_meta.ny) > QUANTIZE_CELL_THRESHOLD
+            or total_cell_steps > QUANTIZE_TOTAL_CELL_STEPS_THRESHOLD
+        )
+        for task_i, t in enumerate(tasks):
+            t["use_uint16"] = use_uint16
+            t["include_stats"] = (task_i == 0) or (n_tasks <= 300)
+
+        encoding_label = "uint16" if use_uint16 else "float32"
+        print(
+            f"[Dusty Earth] [{sp.id}] {sp.name}: grid={grid_meta.nx}x{grid_meta.ny} ({grid_meta.dx_m:.1f} m, {encoding_label}), "
+            f"lon=[{grid_meta.lon_min:.4f}, {grid_meta.lon_max:.4f}], lat=[{grid_meta.lat_min:.4f}, {grid_meta.lat_max:.4f}], "
+            f"vars={len(all_model_vars)}"
+        )
+
+        print(f"[Dusty Earth] [{sp.id}] Processing {n_tasks} timestep(s) using {workers} worker(s)...")
         timesteps_results: List[Dict[str, Any]] = []
-        if workers <= 1 or len(tasks) <= 1:
-            for t in tasks:
-                timesteps_results.append(_export_timestep_task(**t))
+        if workers <= 1 or n_tasks <= 4:
+            timesteps_results.extend(_export_timestep_batch_task(tasks))
         else:
+            batch_size = max(1, min(64, math.ceil(n_tasks / max(1, workers * 2))))
+            batches = [tasks[i:i + batch_size] for i in range(0, n_tasks, batch_size)]
             with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
-                future_to_task = {executor.submit(_export_timestep_task, **t): t for t in tasks}
-                for fut in concurrent.futures.as_completed(future_to_task):
-                    timesteps_results.append(fut.result())
+                future_to_batch = {executor.submit(_export_timestep_batch_task, b): b for b in batches}
+                for fut in concurrent.futures.as_completed(future_to_batch):
+                    timesteps_results.extend(fut.result())
 
         timesteps_results.sort(key=lambda x: x["lead_seconds"])
 
@@ -881,6 +989,6 @@ def update_manifest(
 
     tmp_file = output_dir / "manifest.json.tmp"
     with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(manifest_payload, f, indent=2)
+        json.dump(manifest_payload, f, separators=(",", ":"))
     tmp_file.replace(manifest_file)
     return manifest_file

@@ -80,6 +80,12 @@ def _transform_geojson_geom(geom_dict: Dict[str, Any], mapper, x0: float, y0: fl
         shp = shape(geo_dict)
         if shp.is_empty:
             return None
+        # Strip collinear staircase vertices along coarse/fine rasterized edges while preserving building footprints
+        tol_deg = min(1e-7, (0.05 * min(abs(dx_m), abs(dy_m))) / 111132.0)
+        if tol_deg > 0:
+            simplified = shp.simplify(tol_deg, preserve_topology=True)
+            if not simplified.is_empty:
+                shp = simplified
         if shp.geom_type == "Polygon":
             shp = orient(shp, sign=1.0)
         elif shp.geom_type == "MultiPolygon":
@@ -136,8 +142,10 @@ def _extract_buildings_geojson(
         zt = np.zeros((ny, nx), dtype=np.float64)
     zt_clean = np.where(np.isfinite(zt), zt, 0.0)
 
-    # Group contiguous cells sharing identical (building_id, quantized height_cm)
-    h_cm = np.rint(heights * 100.0).astype(np.int64)
+    # Group contiguous cells sharing identical (building_id, quantized height_cm);
+    # use 25 cm vertical grouping at <= 2 m resolution so micro-noise doesn't fragment 1 m roofs
+    fine_step_cm = 25 if min(abs(dx_m), abs(dy_m)) <= 2.0 else 1
+    h_cm = (np.rint(heights * (100.0 / fine_step_cm)).astype(np.int64)) * fine_step_cm
     occ_r, occ_c = np.where(occ)
     pair_arr = np.column_stack([b_ids[occ_r, occ_c], h_cm[occ_r, occ_c]])
     uniq_pairs, inv = np.unique(pair_arr, axis=0, return_inverse=True)

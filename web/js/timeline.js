@@ -11,10 +11,13 @@ export class TimelineController {
   constructor(domElements) {
     this.dom = domElements;
     this.timesteps = [];
+    this.timestepEpochMs = [];
     this.initTime = null;
     this.currentIndex = 0;
+    this.playheadMs = 0;
     this.isPlaying = false;
-    this.fps = 4;
+    this.simHoursPerSec = 3.0; // Constant physical speed across 1h / 15m / 10m / 1m cadences
+    this.fps = 3.0;
     this.loopMode = "repeat"; // "repeat" | "bounce"
     this.bounceDir = 1;
 
@@ -28,10 +31,20 @@ export class TimelineController {
   setTimesteps(timesteps, preserveIndex = true, initTime = null) {
     this.timesteps = timesteps || [];
     this.initTime = initTime || (this.timesteps[0] ? this.timesteps[0].valid_time : null);
+    const baseDate = this.initTime ? this._parseUtcDate(this.initTime) : null;
+    const baseMs = baseDate ? baseDate.getTime() : 0;
+    this.timestepEpochMs = this.timesteps.map((ts, idx) => {
+      const d = this._parseUtcDate(ts && ts.valid_time);
+      if (d) return d.getTime();
+      const leadSec = ts && typeof ts.lead_seconds === "number" ? ts.lead_seconds : idx * 3600;
+      return baseMs + leadSec * 1000;
+    });
+
     if (!preserveIndex || this.currentIndex >= this.timesteps.length) {
       this.currentIndex = 0;
       this.bounceDir = 1;
     }
+    this.playheadMs = this.timestepEpochMs[this.currentIndex] ?? 0;
 
     const maxIdx = Math.max(0, this.timesteps.length - 1);
     this.dom.slider.min = 0;
@@ -39,36 +52,53 @@ export class TimelineController {
     this.dom.slider.value = this.currentIndex;
 
     this._updateStepButtonTitles();
+    this._updateSpeedLabel();
     this._buildTicks();
     this.updateUI();
   }
 
   getStepIntervalSeconds() {
-    if (this.timesteps.length < 2) return 3600;
+    if (this.timestepEpochMs.length < 2) return 3600;
     const deltas = [];
-    for (let i = 1; i < Math.min(this.timesteps.length, 10); i++) {
-      const d0 = this._parseUtcDate(this.timesteps[i - 1].valid_time);
-      const d1 = this._parseUtcDate(this.timesteps[i].valid_time);
-      if (d0 && d1) {
-        const diff = (d1.getTime() - d0.getTime()) / 1000;
-        if (diff > 0) deltas.push(diff);
-      }
+    for (let i = 1; i < Math.min(this.timestepEpochMs.length, 10); i++) {
+      const diff = (this.timestepEpochMs[i] - this.timestepEpochMs[i - 1]) / 1000;
+      if (diff > 0) deltas.push(diff);
     }
     if (deltas.length === 0) return 3600;
     deltas.sort((a, b) => a - b);
     return Math.round(deltas[Math.floor(deltas.length / 2)]);
   }
 
-  _updateStepButtonTitles() {
-    const dtSec = this.getStepIntervalSeconds();
-    let stepLabel;
-    if (dtSec >= 3600 && dtSec % 3600 === 0) {
-      stepLabel = `${dtSec / 3600}h`;
-    } else if (dtSec >= 60) {
-      stepLabel = `${Math.round(dtSec / 60)}m`;
-    } else {
-      stepLabel = `${dtSec}s`;
+  getTotalSpanSeconds() {
+    if (this.timestepEpochMs.length < 2) return 0;
+    return Math.max(
+      0,
+      (this.timestepEpochMs[this.timestepEpochMs.length - 1] - this.timestepEpochMs[0]) / 1000
+    );
+  }
+
+  getEffectiveSimSecondsPerRealSec() {
+    const base = this.simHoursPerSec * 3600;
+    const totalSpanSec = this.getTotalSpanSeconds();
+    if (totalSpanSec > 0 && totalSpanSec < 1800) {
+      const dtSec = Math.max(1, this.getStepIntervalSeconds());
+      return Math.min(base, Math.max(dtSec, totalSpanSec / 2.5) * (this.simHoursPerSec / 3.0));
     }
+    return base;
+  }
+
+  _formatIntervalLabel(dtSec) {
+    if (dtSec >= 3600 && dtSec % 3600 === 0) {
+      return `${dtSec / 3600}h`;
+    }
+    if (dtSec >= 60) {
+      return `${Math.round(dtSec / 60)}m`;
+    }
+    return `${dtSec}s`;
+  }
+
+  _updateStepButtonTitles() {
+    const stepLabel = this._formatIntervalLabel(this.getStepIntervalSeconds());
     if (this.dom.prevBtn) {
       this.dom.prevBtn.title = `Step -${stepLabel} (Left Arrow | Shift: -1h)`;
     }
@@ -77,23 +107,73 @@ export class TimelineController {
     }
   }
 
-  findNearestIndexForUtc(targetIso) {
-    if (!targetIso || this.timesteps.length === 0) return 0;
-    const targetDate = this._parseUtcDate(targetIso);
-    if (!targetDate) return 0;
-    const targetMs = targetDate.getTime();
+  _updateSpeedLabel() {
+    const cleanNum = Number(this.simHoursPerSec.toFixed(2));
+    const valStr = `${cleanNum}h/s`;
+    if (this.dom.fpsValue) {
+      this.dom.fpsValue.textContent = valStr;
+    }
+    if (this.dom.fpsSlider) {
+      this.dom.fpsSlider.value = String(this.simHoursPerSec);
+      const dtSec = Math.max(1, this.getStepIntervalSeconds());
+      const effSimRate = this.getEffectiveSimSecondsPerRealSec();
+      const effFps = Math.min(60, effSimRate / dtSec);
+      const stepLabel = this._formatIntervalLabel(dtSec);
+      const tip = `Playback speed: ${this.simHoursPerSec} forecast h/s (~${effFps.toFixed(1)} fps @ ${stepLabel} output)`;
+      this.dom.fpsSlider.title = tip;
+      if (this.dom.fpsSlider.parentElement) {
+        this.dom.fpsSlider.parentElement.title = tip;
+      }
+    }
+  }
+
+  _findNearestIndexMs(targetMs) {
+    if (this.timestepEpochMs.length === 0) return 0;
     let bestIdx = 0;
     let bestDist = Infinity;
-    for (let i = 0; i < this.timesteps.length; i++) {
-      const d = this._parseUtcDate(this.timesteps[i].valid_time);
-      if (!d) continue;
-      const dist = Math.abs(d.getTime() - targetMs);
+    for (let i = 0; i < this.timestepEpochMs.length; i++) {
+      const dist = Math.abs(this.timestepEpochMs[i] - targetMs);
       if (dist < bestDist) {
         bestDist = dist;
         bestIdx = i;
       }
     }
     return bestIdx;
+  }
+
+  findNearestIndexForUtc(targetIso) {
+    if (!targetIso || this.timesteps.length === 0) return 0;
+    const targetDate = this._parseUtcDate(targetIso);
+    if (!targetDate) return 0;
+    return this._findNearestIndexMs(targetDate.getTime());
+  }
+
+  getPlayheadIso() {
+    if (this.timestepEpochMs.length > 0 && Number.isFinite(this.playheadMs) && this.playheadMs > 0) {
+      return new Date(this.playheadMs).toISOString();
+    }
+    const cur = this.getCurrentTimestep();
+    return cur ? cur.valid_time : null;
+  }
+
+  syncToUtc(targetIso, notify = false) {
+    if (this.timesteps.length === 0) return;
+    const targetDate = this._parseUtcDate(targetIso);
+    if (!targetDate) {
+      this.goTo(0, notify, false);
+      return;
+    }
+    const targetMs = targetDate.getTime();
+    const idx = this._findNearestIndexMs(targetMs);
+    const tFirst = this.timestepEpochMs[0];
+    const tLast = this.timestepEpochMs[this.timestepEpochMs.length - 1];
+    const dtMs = Math.max(1, this.getStepIntervalSeconds()) * 1000;
+    if (targetMs >= tFirst - dtMs && targetMs <= tLast + dtMs) {
+      this.playheadMs = Math.min(tLast, Math.max(tFirst, targetMs));
+      this.goTo(idx, notify, true);
+    } else {
+      this.goTo(idx, notify, false);
+    }
   }
 
   onFrameChange(callback) {
@@ -112,12 +192,20 @@ export class TimelineController {
     return this.timesteps[this.currentIndex] || this.timesteps[0];
   }
 
-  goTo(index, notify = true) {
+  goTo(index, notify = true, preservePlayhead = false) {
     if (this.timesteps.length === 0) return;
     const clamped = Math.max(0, Math.min(this.timesteps.length - 1, index));
-    if (this.currentIndex === clamped && !notify) return;
+    if (this.currentIndex === clamped && !notify) {
+      if (!preservePlayhead && this.timestepEpochMs[clamped] !== undefined) {
+        this.playheadMs = this.timestepEpochMs[clamped];
+      }
+      return;
+    }
 
     this.currentIndex = clamped;
+    if (!preservePlayhead && this.timestepEpochMs[clamped] !== undefined) {
+      this.playheadMs = this.timestepEpochMs[clamped];
+    }
     this.updateUI();
     if (notify) {
       this._notifyChange();
@@ -158,6 +246,9 @@ export class TimelineController {
     this.dom.playBtn.classList.add("playing");
     this.dom.playIcon.innerHTML = "&#x23F8;";
     this.dom.playLabel.textContent = "Pause";
+    if (!Number.isFinite(this.playheadMs) || this.playheadMs <= 0) {
+      this.playheadMs = this.timestepEpochMs[this.currentIndex] ?? 0;
+    }
     this.lastTickTime = performance.now();
     this.timerId = requestAnimationFrame((t) => this._tick(t));
   }
@@ -193,18 +284,54 @@ export class TimelineController {
     }
   }
 
-  setFps(fps) {
-    this.fps = Math.max(1, Math.min(10, fps));
-    this.dom.fpsValue.textContent = String(this.fps);
+  setSpeedHoursPerSec(hoursPerSec) {
+    this.simHoursPerSec = Math.max(0.25, Math.min(12.0, Number(hoursPerSec) || 3.0));
+    this.fps = this.simHoursPerSec;
+    this._updateSpeedLabel();
+  }
+
+  setFps(val) {
+    this.setSpeedHoursPerSec(val);
   }
 
   _tick(timestamp) {
     if (!this.isPlaying) return;
-    const interval = 1000 / this.fps;
-    if (timestamp - this.lastTickTime >= interval) {
-      this.lastTickTime = timestamp;
-      this.step(1);
+    const dtRealSec = Math.min(0.25, Math.max(0, (timestamp - this.lastTickTime) / 1000));
+    this.lastTickTime = timestamp;
+
+    if (this.timestepEpochMs.length >= 2) {
+      const tFirst = this.timestepEpochMs[0];
+      const tLast = this.timestepEpochMs[this.timestepEpochMs.length - 1];
+      if (tLast > tFirst) {
+        const simSecPerReal = this.getEffectiveSimSecondsPerRealSec();
+        this.playheadMs += dtRealSec * simSecPerReal * 1000 * this.bounceDir;
+
+        if (this.loopMode === "bounce") {
+          if (this.playheadMs >= tLast) {
+            this.playheadMs = Math.max(tFirst, tLast - (this.playheadMs - tLast));
+            this.bounceDir = -1;
+          } else if (this.playheadMs <= tFirst) {
+            this.playheadMs = Math.min(tLast, tFirst + (tFirst - this.playheadMs));
+            this.bounceDir = 1;
+          }
+        } else {
+          const dtMs = Math.max(1, this.getStepIntervalSeconds()) * 1000;
+          const cycleSpan = (tLast - tFirst) + dtMs;
+          if (this.playheadMs >= tLast + dtMs) {
+            this.playheadMs = tFirst + ((this.playheadMs - tFirst) % cycleSpan);
+          } else if (this.playheadMs < tFirst) {
+            this.playheadMs = tFirst;
+          }
+        }
+
+        const clampedMs = Math.min(tLast, Math.max(tFirst, this.playheadMs));
+        const targetIdx = this._findNearestIndexMs(clampedMs);
+        if (targetIdx !== this.currentIndex) {
+          this.goTo(targetIdx, true, true);
+        }
+      }
     }
+
     this.timerId = requestAnimationFrame((t) => this._tick(t));
   }
 
@@ -269,7 +396,7 @@ export class TimelineController {
     const mon = MONTHS_SHORT[d.getUTCMonth()];
     const hh = d.getUTCHours();
     const mm = d.getUTCMinutes();
-    if (includeMinutes) {
+    if (includeMinutes || mm !== 0) {
       return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}Z`;
     }
     if (includeHour || hh !== 0) {
@@ -356,6 +483,19 @@ export class TimelineController {
         selectedIndices = synoptic12hIndices;
         showHourOnTicks = true;
       }
+    } else if (firstDate && lastDate && spanHours >= 6 && spanHours < 48) {
+      const synoptic3hIndices = [];
+      for (let i = 0; i < n; i++) {
+        const d = this._parseUtcDate(this.timesteps[i].valid_time);
+        if (!d) continue;
+        if (d.getUTCMinutes() === 0 && d.getUTCHours() % 3 === 0) {
+          synoptic3hIndices.push(i);
+        }
+      }
+      if (synoptic3hIndices.length >= 4) {
+        selectedIndices = synoptic3hIndices;
+        showHourOnTicks = true;
+      }
     }
 
     if (selectedIndices.length < 3) {
@@ -432,7 +572,7 @@ export class TimelineController {
     this.dom.loopBtn.addEventListener("click", () => this.toggleLoopMode());
 
     this.dom.fpsSlider.addEventListener("input", (e) => {
-      this.setFps(Number(e.target.value));
+      this.setSpeedHoursPerSec(Number(e.target.value));
     });
   }
 }

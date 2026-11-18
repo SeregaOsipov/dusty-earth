@@ -104,6 +104,30 @@ def convert_gas_ppbv(arr: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
     return arr
 
 
+def convert_co2_ppm(arr: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
+    """Converts CO2 mixing ratio (WRF ppmv, CAMS kg/kg, or ppbv) to dry mole fraction in ppm."""
+    units = str(meta.get("units", "")).lower().strip()
+    if units in ("kg kg-1", "kg/kg"):
+        return arr * (28.9644 / 44.0095) * 1.0e6
+    if "ppb" in units:
+        return arr * 1.0e-3
+    if units in ("mol mol-1", "mol/mol"):
+        return arr * 1.0e6
+    return arr
+
+
+def convert_ch4_ppbv(arr: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
+    """Converts CH4 mixing ratio (WRF ppmv, CAMS kg/kg, or ppbv) to dry mole fraction in ppbv."""
+    units = str(meta.get("units", "")).lower().strip()
+    if units in ("kg kg-1", "kg/kg"):
+        return arr * (28.9644 / 16.043) * 1.0e9
+    if "ppm" in units:
+        return arr * 1000.0
+    if units in ("mol mol-1", "mol/mol"):
+        return arr * 1.0e9
+    return arr
+
+
 def convert_rain_rate_mm_h(arr: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
     """Converts instantaneous precipitation rate to mm/h."""
     units = str(meta.get("units", "")).lower().strip()
@@ -222,7 +246,7 @@ DEFAULT_REGISTRY: Dict[str, VariableConfig] = {
         short_name="PM10",
         units="µg/m³",
         category="aerosol",
-        candidate_vars=["pm10", "PM10", "sconc_pm10", "kc_PM10", "salsa_PM10", "kc_PM10_xy", "salsa_PM10_xy"],
+        candidate_vars=["pm10", "PM10", "sconc_pm10", "salsa_PM10", "kc_PM10", "salsa_PM10_xy", "kc_PM10_xy"],
         vmin=0.0,
         vmax=500.0,
         unit_converter=convert_sconc_dust,
@@ -337,6 +361,47 @@ DEFAULT_REGISTRY: Dict[str, VariableConfig] = {
             ColormapStop(0.70, (235, 110, 55, 230)),
             ColormapStop(0.90, (165, 20, 45, 250)),
             ColormapStop(1.00, (80, 0, 35, 255)),
+        ],
+    ),
+    "co2": VariableConfig(
+        id="co2",
+        name="Carbon Dioxide (CO₂)",
+        short_name="CO₂",
+        units="ppm",
+        category="ghg",
+        candidate_vars=["co2", "CO2", "sconc_co2", "xco2", "kc_CO2", "kc_CO2_xy"],
+        vmin=415.0,
+        vmax=465.0,
+        unit_converter=convert_co2_ppm,
+        description="Near-surface carbon dioxide dry air mole fraction (ppm).",
+        colormap_stops=[
+            ColormapStop(0.00, (30, 58, 138, 55)),
+            ColormapStop(0.16, (14, 165, 233, 105)),
+            ColormapStop(0.30, (16, 185, 129, 150)),
+            ColormapStop(0.50, (250, 204, 21, 195)),
+            ColormapStop(0.72, (249, 115, 22, 230)),
+            ColormapStop(0.88, (220, 38, 38, 245)),
+            ColormapStop(1.00, (127, 29, 29, 255)),
+        ],
+    ),
+    "ch4": VariableConfig(
+        id="ch4",
+        name="Methane (CH₄)",
+        short_name="CH₄",
+        units="ppbv",
+        category="ghg",
+        candidate_vars=["ch4", "CH4", "ch4_c", "sconc_ch4", "xch4", "kc_CH4", "kc_CH4_xy"],
+        vmin=1850.0,
+        vmax=2650.0,
+        unit_converter=convert_ch4_ppbv,
+        description="Near-surface methane dry air mixing ratio (ppbv).",
+        colormap_stops=[
+            ColormapStop(0.00, (49, 46, 129, 55)),
+            ColormapStop(0.18, (6, 182, 212, 110)),
+            ColormapStop(0.35, (52, 211, 153, 155)),
+            ColormapStop(0.55, (250, 204, 21, 200)),
+            ColormapStop(0.78, (249, 115, 22, 235)),
+            ColormapStop(1.00, (190, 24, 93, 255)),
         ],
     ),
     "wind10m": VariableConfig(
