@@ -18,7 +18,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CYCLE=""
 INPUT_DIR=""
 OUTPUT_DIR="/scratch/sims/WRF_run/operational_forecast/portal_web"
-WORKERS=6
+WORKERS=16
 RETENTION_DAYS=5
 
 usage() {

@@ -93,7 +93,7 @@ dusty-export \
 
 Parameters:
 - `-i, --input`: Path to a NetCDF/wrfout file or directory containing model outputs.
-- `-o, --output`: Web portal root directory where `index.html`, `manifest.json`, and `cycles/` reside (served at `http://10.161.93.144:8080/`, while the legacy static WebP portal resides at `/static`).
+- `-o, --output`: Web portal root directory where `index.html`, `manifest.json`, and `cycles/` reside (served at `http://10.161.93.135:8080/`, while the legacy static WebP portal resides at `/static`).
 - `-c, --cycle`: (Optional) Forecast cycle ID (e.g. `20261114_00`). Automatically detected if omitted.
 - `--palm-root`: (Optional) Root directory of PALM-4U runs (`doha_forecast_100m`, `doha_forecast_chem`) to auto-discover and co-register matching cycle runs alongside static 3D buildings/canopy.
 - `--extra-input`: (Optional) Additional model output directories/files to co-register in the cycle.
