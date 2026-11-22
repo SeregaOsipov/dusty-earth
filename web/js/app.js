@@ -578,6 +578,8 @@ class DustyApp {
       defaultVarId = preferredVarId;
     } else if (this.activeVariable && vars.some((v) => v.id === this.activeVariable.id)) {
       defaultVarId = this.activeVariable.id;
+    } else if (vars.some((v) => v.id === "wind10m")) {
+      defaultVarId = "wind10m";
     } else if (vars.some((v) => v.id === "pm25")) {
       defaultVarId = "pm25";
     } else if (vars.some((v) => v.id === "no2")) {
