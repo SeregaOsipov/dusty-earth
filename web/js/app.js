@@ -153,25 +153,52 @@ class DustyApp {
     await this.loadManifest();
   }
 
+  _versionAssetUrl(url, vTag) {
+    if (!url || !vTag || /[?&]v=/.test(url)) return url;
+    return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(vTag)}`;
+  }
+
   _normalizeCycleModels(cycle) {
-    if (cycle.models && Array.isArray(cycle.models) && cycle.models.length > 0) {
-      return cycle.models;
-    }
-    return [
-      {
-        id: "default",
-        name: "Operational Forecast",
-        short_name: "Forecast",
-        badge: cycle.grid && cycle.grid.dx_m ? `${Math.round(cycle.grid.dx_m / 1000)} km` : "10 km",
-        model_family: "wrf",
-        resolution_m: cycle.grid && cycle.grid.dx_m ? cycle.grid.dx_m : 10000,
-        min_auto_zoom: 0.0,
-        exit_auto_zoom: 0.0,
-        grid: cycle.grid,
-        variables: cycle.variables || [],
-        timesteps: cycle.timesteps || [],
-      },
-    ];
+    const rawModels =
+      cycle.models && Array.isArray(cycle.models) && cycle.models.length > 0
+        ? cycle.models
+        : [
+            {
+              id: "default",
+              name: "Operational Forecast",
+              short_name: "Forecast",
+              badge: cycle.grid && cycle.grid.dx_m ? `${Math.round(cycle.grid.dx_m / 1000)} km` : "10 km",
+              model_family: "wrf",
+              resolution_m: cycle.grid && cycle.grid.dx_m ? cycle.grid.dx_m : 10000,
+              min_auto_zoom: 0.0,
+              exit_auto_zoom: 0.0,
+              grid: cycle.grid,
+              variables: cycle.variables || [],
+              timesteps: cycle.timesteps || [],
+            },
+          ];
+
+    const vTag = cycle.export_id || cycle.exported_at || (this.manifest && this.manifest.generated_at) || "";
+    if (!vTag) return rawModels;
+
+    rawModels.forEach((m) => {
+      (m.timesteps || []).forEach((ts) => {
+        if (!ts || !ts.files) return;
+        Object.values(ts.files).forEach((entry) => {
+          if (!entry || typeof entry !== "object") return;
+          if (entry.scalar) entry.scalar = this._versionAssetUrl(entry.scalar, vTag);
+          if (entry.u) entry.u = this._versionAssetUrl(entry.u, vTag);
+          if (entry.v) entry.v = this._versionAssetUrl(entry.v, vTag);
+        });
+      });
+      if (m.buildings_3d && m.buildings_3d.url) {
+        m.buildings_3d.url = this._versionAssetUrl(m.buildings_3d.url, vTag);
+      }
+      if (m.canopy_3d && m.canopy_3d.url) {
+        m.canopy_3d.url = this._versionAssetUrl(m.canopy_3d.url, vTag);
+      }
+    });
+    return rawModels;
   }
 
   async loadManifest() {

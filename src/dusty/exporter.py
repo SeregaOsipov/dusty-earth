@@ -1004,11 +1004,14 @@ def update_manifest(
         }]
 
     primary_model = models[0]
+    now_utc = datetime.now(timezone.utc)
+    export_id = str(int(now_utc.timestamp() * 1000))
     existing_cycles[cycle_id] = {
         "id": cycle_id,
         "label": f"{cycle_dt.strftime('%Y-%m-%d %H:%M')} UTC ({cycle_id})",
         "init_time": cycle_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "exported_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "export_id": export_id,
         "default_model": primary_model["id"],
         "models": models,
         # Top-level v1 compatibility mirrors primary (coarsest) model

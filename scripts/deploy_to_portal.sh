@@ -105,6 +105,8 @@ fi
 echo "[Dusty Earth] Synchronizing static WebGL frontend to ${OUTPUT_DIR}..."
 mkdir -p "${OUTPUT_DIR}/cycles"
 cp -f "${REPO_DIR}/web/index.html" "${OUTPUT_DIR}/index.html"
+ASSET_VER="$(date -u +%Y%m%dT%H%M%SZ)"
+sed -i -E "s|href=\"css/styles\.css(\?[^\"]*)?\"|href=\"css/styles.css?v=${ASSET_VER}\"|g; s|src=\"js/app\.js(\?[^\"]*)?\"|src=\"js/app.js?v=${ASSET_VER}\"|g" "${OUTPUT_DIR}/index.html"
 mkdir -p "${OUTPUT_DIR}/css" "${OUTPUT_DIR}/js" "${OUTPUT_DIR}/vendor"
 cp -rf "${REPO_DIR}/web/css/"* "${OUTPUT_DIR}/css/"
 cp -rf "${REPO_DIR}/web/js/"* "${OUTPUT_DIR}/js/"
@@ -114,6 +116,7 @@ fi
 
 # 4. Execute dusty-export Binary Grid Pipeline
 echo "[Dusty Earth] Exporting binary Float32/Uint16 grids from ${INPUT_DIR}..."
+export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 CMD=("${PYTHON_BIN}" -m dusty.cli -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -w "${WORKERS}")
 if [ -n "${CYCLE}" ]; then
     CMD+=(-c "${CYCLE}")

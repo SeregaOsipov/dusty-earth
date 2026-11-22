@@ -257,6 +257,7 @@ def test_single_model_and_http_serving() -> None:
         assert manifest.get("app") == "Dusty Earth"
         cycle = manifest["cycles"][0]
         assert cycle["id"] == "20261022_00"
+        assert str(cycle.get("export_id", "")).isdigit(), f"Missing export_id on cycle: {cycle.keys()}"
         assert len(cycle["models"]) == 1
         grid = cycle["grid"]
         assert grid["nx"] == nx and grid["ny"] == ny
@@ -295,6 +296,8 @@ def test_single_model_and_http_serving() -> None:
             "js/map-engine.js",
         ):
             assert (web_out / req_asset).exists(), f"Missing deployed asset: {req_asset}"
+        index_html = (web_out / "index.html").read_text(encoding="utf-8")
+        assert "js/app.js?v=" in index_html and "css/styles.css?v=" in index_html
 
         handler = http.server.SimpleHTTPRequestHandler
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: handler(*a, directory=str(web_out)))
