@@ -426,6 +426,7 @@ def test_icon_art_co_registration() -> None:
             coords={"time": times, "lat": lats, "lon": lons},
         )
         icon_ds.to_netcdf(icon_out_dir / "icon_art_20261114_00.nc")
+        icon_ds.to_netcdf(icon_out_dir / "icon_art_dom02_20261114_00.nc")
 
         mpath = export_forecast(
             input_path=wrf_dir,
@@ -437,8 +438,14 @@ def test_icon_art_co_registration() -> None:
         )
         manifest = json.loads(mpath.read_text(encoding="utf-8"))
         models = manifest["cycles"][0]["models"]
-        assert [m["id"] for m in models] == ["wrf_d01", "icon_art_5km", "wrf_d02", "palm_doha_urban_100m_m001_100m"]
-        assert [m["badge"] for m in models] == ["10 km", "5 km", "2 km", "100 m"]
+        assert [m["id"] for m in models] == [
+            "wrf_d01",
+            "icon_art_5km",
+            "icon_art_qatar_2_5km",
+            "wrf_d02",
+            "palm_doha_urban_100m_m001_100m",
+        ]
+        assert [m["badge"] for m in models] == ["10 km", "5 km", "2.5 km", "2 km", "100 m"]
         icon_m = models[1]
         assert icon_m["model_family"] == "icon"
         icon_var_ids = {v["id"] for v in icon_m["variables"]}

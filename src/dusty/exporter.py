@@ -456,7 +456,9 @@ def _discover_models(
                     if found:
                         icon_files = found
                         break
-            if icon_files:
+            icon_dom01 = [f for f in icon_files if not re.search(r"_dom\d+_", f.name)]
+            icon_dom02 = [f for f in icon_files if "_dom02_" in f.name]
+            if icon_dom01:
                 specs.append(ModelSourceSpec(
                     id="icon_art_5km",
                     name="ICON-ART 5 km (Gulf / Arabia)",
@@ -464,8 +466,19 @@ def _discover_models(
                     badge="5 km",
                     model_family="icon",
                     resolution_m=4920.0,
-                    files=icon_files,
+                    files=icon_dom01,
                     domain_tag="dom01",
+                ))
+            if icon_dom02:
+                specs.append(ModelSourceSpec(
+                    id="icon_art_qatar_2_5km",
+                    name="ICON-ART 2.5 km (Qatar)",
+                    short_name="ICON 2.5 km",
+                    badge="2.5 km",
+                    model_family="icon",
+                    resolution_m=2460.0,
+                    files=icon_dom02,
+                    domain_tag="dom02",
                 ))
 
     # 3. Discover any explicit extra inputs
