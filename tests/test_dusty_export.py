@@ -388,12 +388,71 @@ def test_multidomain_15min_and_config_agnostic_palm() -> None:
         print("  -> Test 2 PASSED.")
 
 
+def test_icon_art_co_registration() -> None:
+    print("[Test 3] ICON-ART 5 km co-registration & coarsest-to-finest model ordering...")
+    with tempfile.TemporaryDirectory(prefix="dusty_icon_") as tmpdir:
+        tmp_path = Path(tmpdir)
+        wrf_dir = tmp_path / "wrf_run"
+        wrf_dir.mkdir()
+        palm_root = tmp_path / "palm_oper"
+        icon_root = tmp_path / "icon_oper"
+        web_out = tmp_path / "portal"
+
+        mins = [0, 60]
+        create_synthetic_wrfout(wrf_dir / "wrfout_d01_2026-11-14_00_00_00", 10000.0, 24, 24, 51.0, 25.5, mins)
+        create_synthetic_wrfout(wrf_dir / "wrfout_d02_2026-11-14_00_00_00", 2000.0, 24, 24, 51.5, 25.3, mins)
+        create_synthetic_palm_run(palm_root / "doha_urban_100m", "20261114_00", 100.0, 20, 20, 25.25, 51.48)
+
+        # Create synthetic ICON-ART CF NetCDF on 0.045 deg grid under icon_root/output/20261114_00/
+        icon_out_dir = icon_root / "output" / "20261114_00"
+        icon_out_dir.mkdir(parents=True, exist_ok=True)
+        lats = np.linspace(24.0, 27.0, 20, dtype=np.float32)
+        lons = np.linspace(49.0, 53.0, 24, dtype=np.float32)
+        times = [np.datetime64("2026-11-14T00:00:00"), np.datetime64("2026-11-14T01:00:00")]
+        icon_ds = xr.Dataset(
+            data_vars={
+                "t2m": (("time", "lat", "lon"), np.full((2, 20, 24), 299.5, dtype=np.float32), {"units": "K"}),
+                "u10": (("time", "lat", "lon"), np.full((2, 20, 24), 4.0, dtype=np.float32), {"units": "m s-1"}),
+                "v10": (("time", "lat", "lon"), np.full((2, 20, 24), -3.0, dtype=np.float32), {"units": "m s-1"}),
+                "sconc_dust": (("time", "lat", "lon"), np.full((2, 20, 24), 120.0, dtype=np.float32), {"units": "ug m-3"}),
+                "dust_load": (("time", "lat", "lon"), np.full((2, 20, 24), 450.0, dtype=np.float32), {"units": "mg m-2"}),
+                "so2": (("time", "lat", "lon"), np.full((2, 20, 24), 4.2, dtype=np.float32), {"units": "ppbv"}),
+                "no2": (("time", "lat", "lon"), np.full((2, 20, 24), 8.5, dtype=np.float32), {"units": "ppbv"}),
+                "o3": (("time", "lat", "lon"), np.full((2, 20, 24), 45.0, dtype=np.float32), {"units": "ppbv"}),
+                "co": (("time", "lat", "lon"), np.full((2, 20, 24), 130.0, dtype=np.float32), {"units": "ppbv"}),
+                "co2": (("time", "lat", "lon"), np.full((2, 20, 24), 425.0, dtype=np.float32), {"units": "ppm"}),
+                "ch4": (("time", "lat", "lon"), np.full((2, 20, 24), 1980.0, dtype=np.float32), {"units": "ppbv"}),
+            },
+            coords={"time": times, "lat": lats, "lon": lons},
+        )
+        icon_ds.to_netcdf(icon_out_dir / "icon_art_20261114_00.nc")
+
+        mpath = export_forecast(
+            input_path=wrf_dir,
+            output_dir=web_out,
+            cycle_str="20261114_00",
+            workers=2,
+            palm_root=palm_root,
+            icon_root=icon_root,
+        )
+        manifest = json.loads(mpath.read_text(encoding="utf-8"))
+        models = manifest["cycles"][0]["models"]
+        assert [m["id"] for m in models] == ["wrf_d01", "icon_art_5km", "wrf_d02", "palm_doha_urban_100m_m001_100m"]
+        assert [m["badge"] for m in models] == ["10 km", "5 km", "2 km", "100 m"]
+        icon_m = models[1]
+        assert icon_m["model_family"] == "icon"
+        icon_var_ids = {v["id"] for v in icon_m["variables"]}
+        assert {"t2m", "wind10m", "sconc_dust", "dust_load", "so2", "no2", "o3", "co", "co2", "ch4"}.issubset(icon_var_ids)
+        print("  -> Test 3 PASSED.")
+
+
 def run_verification_test() -> None:
     print("======================================================================")
     print(" Running Dusty Earth Multi-Model Verification Suite")
     print("======================================================================")
     test_single_model_and_http_serving()
     test_multidomain_15min_and_config_agnostic_palm()
+    test_icon_art_co_registration()
     print("======================================================================")
     print(" ALL VERIFICATION CHECKS PASSED (100% OK)")
     print("======================================================================")

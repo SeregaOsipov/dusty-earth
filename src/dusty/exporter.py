@@ -329,6 +329,7 @@ def _discover_models(
     input_path: Union[str, Path],
     cycle_str: Optional[str],
     palm_root: Optional[Union[str, Path]] = None,
+    icon_root: Optional[Union[str, Path]] = None,
     extra_inputs: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Tuple[str, datetime, List[ModelSourceSpec]]:
     """Discover all model streams (WRF d01..d0N, PALM-4U domains, or generic NetCDF) for the cycle."""
@@ -443,6 +444,29 @@ def _discover_models(
                     palm_cycle_dirs.append((case_dir.name, cyc_dir))
             for case_name, cyc_dir in palm_cycle_dirs:
                 specs.extend(_discover_palm_models_in_dir(cyc_dir, case_name))
+
+    # 2b. Discover ICON-ART regional LAM simulations for matching cycle_id under icon_root
+    if icon_root is not None:
+        ir = Path(icon_root)
+        if ir.is_dir():
+            icon_files: List[Path] = []
+            for base_cand in (ir / "output" / cycle_id, ir / cycle_id, ir):
+                if base_cand.is_dir():
+                    found = sorted(base_cand.glob("icon_art_*.nc"))
+                    if found:
+                        icon_files = found
+                        break
+            if icon_files:
+                specs.append(ModelSourceSpec(
+                    id="icon_art_5km",
+                    name="ICON-ART 5 km (Gulf / Arabia)",
+                    short_name="ICON 5 km",
+                    badge="5 km",
+                    model_family="icon",
+                    resolution_m=4920.0,
+                    files=icon_files,
+                    domain_tag="dom01",
+                ))
 
     # 3. Discover any explicit extra inputs
     if extra_inputs:
@@ -721,11 +745,12 @@ def export_forecast(
     workers: int = 4,
     registry: Optional[VariableRegistry] = None,
     palm_root: Optional[Union[str, Path]] = None,
+    icon_root: Optional[Union[str, Path]] = None,
     extra_inputs: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Path:
     """
     Main multi-model export engine:
-      1. Discovers WRF nested domains, PALM-4U LES simulations, or generic NetCDFs.
+      1. Discovers WRF nested domains, ICON-ART, PALM-4U LES simulations, or generic NetCDFs.
       2. Matches valid variables per model against registry (filtering all-NaN dummies).
       3. Uses ProcessPoolExecutor batches to dump Float32 / Uint16 binary buffers at native timesteps.
       4. Compiles and updates manifest.json with backward-compatible top-level defaults + models[].
@@ -738,6 +763,7 @@ def export_forecast(
         input_path=input_path,
         cycle_str=cycle_str,
         palm_root=palm_root,
+        icon_root=icon_root,
         extra_inputs=extra_inputs,
     )
 

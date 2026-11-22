@@ -123,6 +123,11 @@ if [ -n "${PALM_RUN_ROOT}" ] && [ -d "${PALM_RUN_ROOT}" ]; then
     CMD+=(--palm-root "${PALM_RUN_ROOT}")
 fi
 
+ICON_RUN_ROOT="${ICON_RUN_ROOT:-${WORK_DIR:-/scratch/sims}/ICON_run/operational_forecast}"
+if [ -n "${ICON_RUN_ROOT}" ] && [ -d "${ICON_RUN_ROOT}" ]; then
+    CMD+=(--icon-root "${ICON_RUN_ROOT}")
+fi
+
 "${CMD[@]}"
 
 # 5. Prune Old Rendered Cycles (Keep newest RETENTION_DAYS cycles)

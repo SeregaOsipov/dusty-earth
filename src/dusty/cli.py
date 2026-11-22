@@ -61,6 +61,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Optional root directory of PALM-4U simulations (auto-discovers matching cycle_id runs).",
     )
     parser.add_argument(
+        "--icon-root",
+        dest="icon_root",
+        type=Path,
+        default=None,
+        help="Optional root directory of ICON-ART simulations (auto-discovers matching cycle_id runs).",
+    )
+    parser.add_argument(
         "--extra-input",
         dest="extra_inputs",
         nargs="*",
@@ -81,6 +88,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             variables=args.variables,
             workers=args.workers,
             palm_root=args.palm_root,
+            icon_root=args.icon_root,
             extra_inputs=args.extra_inputs,
         )
     except Exception as e:
