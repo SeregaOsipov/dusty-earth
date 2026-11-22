@@ -298,6 +298,10 @@ def test_single_model_and_http_serving() -> None:
             assert (web_out / req_asset).exists(), f"Missing deployed asset: {req_asset}"
         index_html = (web_out / "index.html").read_text(encoding="utf-8")
         assert "js/app.js?v=" in index_html and "css/styles.css?v=" in index_html
+        assert 'id="domain-preview-card"' in index_html and 'id="domain-preview-overlay"' in index_html
+        app_js = (web_out / "js" / "app.js").read_text(encoding="utf-8")
+        assert "_groupModelsByFamily" in app_js and "setPreviewDomains" in app_js
+        assert "./scalar-layer.js?v=" in app_js
 
         handler = http.server.SimpleHTTPRequestHandler
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: handler(*a, directory=str(web_out)))
@@ -450,7 +454,10 @@ def test_icon_art_co_registration() -> None:
         ]
         assert [m["badge"] for m in models] == ["10 km", "5 km", "2.5 km", "2 km", "100 m"]
         icon_m = models[1]
+        icon_nest = models[2]
         assert icon_m["model_family"] == "icon"
+        assert abs(icon_m["min_auto_zoom"] - 5.7) < 1e-6
+        assert abs(icon_nest["min_auto_zoom"] - 6.9) < 1e-6
         icon_var_ids = {v["id"] for v in icon_m["variables"]}
         assert {"t2m", "wind10m", "sconc_dust", "dust_load", "so2", "no2", "o3", "co", "co2", "ch4"}.issubset(icon_var_ids)
         print("  -> Test 3 PASSED.")

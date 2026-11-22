@@ -71,10 +71,12 @@ def format_resolution_badge(dx_m: float) -> str:
 
 def derive_auto_zoom_thresholds(resolution_m: float) -> Tuple[float, float]:
     """Derive (min_auto_zoom, exit_auto_zoom) with hysteresis directly from grid spacing."""
-    if resolution_m >= 5000.0:
+    if resolution_m >= 8000.0:
         return 0.0, 0.0
+    if resolution_m >= 3500.0:
+        return 5.7, 5.3
     if resolution_m >= 1000.0:
-        return 6.8, 6.3
+        return 6.9, 6.4
     if resolution_m >= 40.0:
         return 10.5, 10.0
     if resolution_m >= 5.0:
@@ -459,6 +461,7 @@ def _discover_models(
             icon_dom01 = [f for f in icon_files if not re.search(r"_dom\d+_", f.name)]
             icon_dom02 = [f for f in icon_files if "_dom02_" in f.name]
             if icon_dom01:
+                min_z, exit_z = derive_auto_zoom_thresholds(4920.0)
                 specs.append(ModelSourceSpec(
                     id="icon_art_5km",
                     name="ICON-ART 5 km (Gulf / Arabia)",
@@ -468,8 +471,11 @@ def _discover_models(
                     resolution_m=4920.0,
                     files=icon_dom01,
                     domain_tag="dom01",
+                    min_auto_zoom=min_z,
+                    exit_auto_zoom=exit_z,
                 ))
             if icon_dom02:
+                min_z, exit_z = derive_auto_zoom_thresholds(2460.0)
                 specs.append(ModelSourceSpec(
                     id="icon_art_qatar_2_5km",
                     name="ICON-ART 2.5 km (Qatar)",
@@ -479,6 +485,8 @@ def _discover_models(
                     resolution_m=2460.0,
                     files=icon_dom02,
                     domain_tag="dom02",
+                    min_auto_zoom=min_z,
+                    exit_auto_zoom=exit_z,
                 ))
 
     # 3. Discover any explicit extra inputs

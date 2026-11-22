@@ -26,6 +26,7 @@ class DustyApp {
     this._lastBoundsSig = null;
     this._timestepTicket = 0;
     this._lastWindUpdateMs = 0;
+    this._previewState = null;
 
     this.mapEngine = new MapEngine("map");
     this.scalarLayer = null;
@@ -43,6 +44,8 @@ class DustyApp {
       modelSelectorBar: document.getElementById("model-selector-bar"),
       modelAutoBtn: document.getElementById("btn-model-auto"),
       modelPillsList: document.getElementById("model-pills-list"),
+      domainPreviewCard: document.getElementById("domain-preview-card"),
+      domainPreviewOverlay: document.getElementById("domain-preview-overlay"),
       layerDock: document.getElementById("layer-dock-list"),
       windToggleBtn: document.getElementById("btn-toggle-wind"),
       buildingsToggleBtn: document.getElementById("btn-toggle-buildings"),
@@ -120,6 +123,9 @@ class DustyApp {
       this.scalarLayer.render();
       if (this.windParticles && this.showWindOverlay) {
         this.windParticles.clear();
+      }
+      if (this._previewState) {
+        this._updatePreviewOverlay();
       }
     });
 
@@ -298,24 +304,186 @@ class DustyApp {
     this.selectModel(startModel.id, { fromAuto: !explicitModel, fitView: true, preferredVarId });
   }
 
+  _escapeHtml(str) {
+    return String(str ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  _getModelFamilyMeta(model) {
+    const rawFam = String((model && model.model_family) || "").toLowerCase();
+    const idName = `${(model && model.id) || ""} ${(model && model.name) || ""}`.toLowerCase();
+    let fam = rawFam;
+    if (!fam || fam === "generic") {
+      if (idName.includes("wrf")) fam = "wrf";
+      else if (idName.includes("icon")) fam = "icon";
+      else if (idName.includes("palm")) fam = "palm";
+      else if (idName.includes("cams")) fam = "cams";
+    }
+    const table = {
+      wrf: {
+        key: "wrf",
+        label: "WRF-Chem",
+        color: "#38bdf8",
+        glow: "rgba(56, 189, 248, 0.38)",
+        fill: "rgba(56, 189, 248, 0.09)",
+      },
+      icon: {
+        key: "icon",
+        label: "ICON-ART",
+        color: "#f59e0b",
+        glow: "rgba(245, 158, 11, 0.40)",
+        fill: "rgba(245, 158, 11, 0.10)",
+      },
+      palm: {
+        key: "palm",
+        label: "PALM-4U",
+        color: "#10b981",
+        glow: "rgba(16, 185, 129, 0.42)",
+        fill: "rgba(16, 185, 129, 0.13)",
+      },
+      cams: {
+        key: "cams",
+        label: "CAMS",
+        color: "#a78bfa",
+        glow: "rgba(167, 139, 250, 0.38)",
+        fill: "rgba(167, 139, 250, 0.09)",
+      },
+    };
+    return (
+      table[fam] || {
+        key: fam || "generic",
+        label: "Forecast",
+        color: "#cbd5e1",
+        glow: "rgba(203, 213, 225, 0.32)",
+        fill: "rgba(203, 213, 225, 0.08)",
+      }
+    );
+  }
+
+  _groupModelsByFamily(models) {
+    const groupsMap = new Map();
+    (models || []).forEach((m) => {
+      const meta = this._getModelFamilyMeta(m);
+      if (!groupsMap.has(meta.key)) {
+        groupsMap.set(meta.key, { meta, models: [] });
+      }
+      groupsMap.get(meta.key).models.push(m);
+    });
+
+    const groups = Array.from(groupsMap.values());
+    groups.forEach((group) => {
+      group.models.sort((a, b) => (Number(b.resolution_m) || 0) - (Number(a.resolution_m) || 0));
+      const badgeCounts = new Map();
+      group.models.forEach((m) => {
+        const b = String(m.badge || m.short_name || m.id || "");
+        badgeCounts.set(b, (badgeCounts.get(b) || 0) + 1);
+      });
+      group.chipLabels = new Map();
+      group.models.forEach((m) => {
+        const b = String(m.badge || m.short_name || m.id || "");
+        if ((badgeCounts.get(b) || 0) > 1) {
+          const cleanName = String(m.name || m.id || "")
+            .replace(/\(.*?\)/g, "")
+            .trim()
+            .split(/\s+/)
+            .slice(-1)[0];
+          group.chipLabels.set(m.id, cleanName ? `${b} ${cleanName}` : b);
+        } else {
+          group.chipLabels.set(m.id, b);
+        }
+      });
+    });
+
+    groups.sort(
+      (a, b) =>
+        (Number(b.models[0] && b.models[0].resolution_m) || 0) -
+        (Number(a.models[0] && a.models[0].resolution_m) || 0)
+    );
+    return groups;
+  }
+
   _populateModels(models) {
     if (!this.dom.modelPillsList) return;
     this.dom.modelPillsList.innerHTML = "";
+    this._clearDomainPreview();
 
-    models.forEach((m) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "model-pill";
-      btn.dataset.modelId = m.id;
-      btn.innerHTML = `<span>${m.short_name || m.name}</span><span class="model-pill-badge">${m.badge}</span>`;
-      btn.title = `${m.name} (${m.timesteps.length} steps)`;
-      btn.addEventListener("click", () => {
+    const groups = this._groupModelsByFamily(models);
+    groups.forEach((group) => {
+      const wrap = document.createElement("div");
+      wrap.className = "model-family-group";
+      wrap.dataset.family = group.meta.key;
+      wrap.style.setProperty("--family-color", group.meta.color);
+
+      const famBtn = document.createElement("button");
+      famBtn.type = "button";
+      famBtn.className = "model-family-btn";
+      famBtn.title = `${group.meta.label} (${group.models.map((m) => m.badge).join(" / ")}) — hover to preview domains, click to select or cycle`;
+      famBtn.innerHTML = `<span class="model-family-dot"></span><span class="model-family-name">${this._escapeHtml(group.meta.label)}</span>`;
+
+      const showFamPreview = () => {
+        this._showDomainPreview({
+          mode: "family",
+          familyMeta: group.meta,
+          models: group.models,
+        });
+      };
+      famBtn.addEventListener("mouseenter", showFamPreview);
+      famBtn.addEventListener("focus", showFamPreview);
+      famBtn.addEventListener("click", () => {
         this.autoModelMode = false;
-        this._syncModelSelectorUI();
-        const needsFit = !this._isModelVisibleInViewport(m);
-        this.selectModel(m.id, { fromAuto: false, fitView: needsFit });
+        const currIdx = this.activeModel ? group.models.findIndex((m) => m.id === this.activeModel.id) : -1;
+        let targetModel;
+        if (currIdx >= 0 && group.models.length > 1) {
+          targetModel = group.models[(currIdx + 1) % group.models.length];
+        } else {
+          targetModel = group.models.find((m) => this._isModelVisibleInViewport(m)) || group.models[0];
+        }
+        const needsFit =
+          !this._isModelVisibleInViewport(targetModel) ||
+          this._getModelViewportFraction(targetModel) < 0.05;
+        this.selectModel(targetModel.id, { fromAuto: false, fitView: needsFit });
       });
-      this.dom.modelPillsList.appendChild(btn);
+      wrap.appendChild(famBtn);
+
+      const resList = document.createElement("div");
+      resList.className = "model-res-list";
+
+      group.models.forEach((m) => {
+        const chipLabel = group.chipLabels.get(m.id) || m.badge || m.short_name || m.id;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "model-pill model-res-btn";
+        btn.dataset.modelId = m.id;
+        btn.dataset.family = group.meta.key;
+        btn.textContent = chipLabel;
+        btn.title = `${m.name} (${(m.timesteps || []).length} steps)`;
+
+        const showModelPreview = () => {
+          this._showDomainPreview({
+            mode: "model",
+            familyMeta: group.meta,
+            models: [m],
+          });
+        };
+        btn.addEventListener("mouseenter", showModelPreview);
+        btn.addEventListener("focus", showModelPreview);
+        btn.addEventListener("click", () => {
+          this.autoModelMode = false;
+          this._syncModelSelectorUI();
+          const needsFit =
+            !this._isModelVisibleInViewport(m) ||
+            this._getModelViewportFraction(m) < 0.05;
+          this.selectModel(m.id, { fromAuto: false, fitView: needsFit });
+        });
+        resList.appendChild(btn);
+      });
+
+      wrap.appendChild(resList);
+      this.dom.modelPillsList.appendChild(wrap);
     });
 
     this._syncModelSelectorUI();
@@ -329,6 +497,11 @@ class DustyApp {
 
     const currentTs = this.timeline ? this.timeline.getCurrentTimestep() : null;
     const currentMs = currentTs ? Date.parse(currentTs.valid_time) : Number.NaN;
+    const activeFamily = this.activeModel ? this._getModelFamilyMeta(this.activeModel).key : null;
+
+    this.dom.modelPillsList.querySelectorAll(".model-family-group").forEach((grp) => {
+      grp.classList.toggle("active-family", Boolean(activeFamily && grp.dataset.family === activeFamily));
+    });
 
     this.dom.modelPillsList.querySelectorAll(".model-pill").forEach((btn) => {
       const mid = btn.dataset.modelId;
@@ -344,6 +517,10 @@ class DustyApp {
       }
       btn.classList.toggle("out-of-range", outOfRange && !isActive);
     });
+
+    if (this._previewState) {
+      this._updatePreviewOverlay();
+    }
   }
 
   selectModel(modelId, { fromAuto = false, fitView = false, preferredVarId = null } = {}) {
@@ -462,6 +639,196 @@ class DustyApp {
     const gridArea = Math.max(1e-10, (g.lon_max - g.lon_min) * (g.lat_max - g.lat_min));
     const domFrac = (oW * oH) / gridArea;
     return viewFrac >= 0.28 || domFrac >= 0.65;
+  }
+
+  _getModelViewportFraction(model) {
+    if (!model || !model.grid || !this.mapEngine.map) return 1.0;
+    const b = this.mapEngine.map.getBounds();
+    if (!b) return 1.0;
+    const g = model.grid;
+    const vW = b.getEast() - b.getWest();
+    const vH = b.getNorth() - b.getSouth();
+    const oW = Math.max(0, Math.min(b.getEast(), g.lon_max) - Math.max(b.getWest(), g.lon_min));
+    const oH = Math.max(0, Math.min(b.getNorth(), g.lat_max) - Math.max(b.getSouth(), g.lat_min));
+    if (oW <= 0 || oH <= 0 || vW <= 0 || vH <= 0) return 0.0;
+    return (oW * oH) / (vW * vH);
+  }
+
+  _formatGridSpacing(dxM) {
+    const val = Number(dxM);
+    if (!Number.isFinite(val) || val <= 0) return "";
+    if (val >= 1000) {
+      const km = val / 1000;
+      return `${Math.abs(km - Math.round(km)) < 0.08 ? Math.round(km) : km.toFixed(1)} km`;
+    }
+    return `${Math.round(val)} m`;
+  }
+
+  _showDomainPreview(state) {
+    if (!state || !Array.isArray(state.models) || state.models.length === 0) {
+      this._clearDomainPreview();
+      return;
+    }
+    this._previewState = state;
+    this._updatePreviewOverlay();
+  }
+
+  _clearDomainPreview() {
+    this._previewState = null;
+    if (this.scalarLayer && typeof this.scalarLayer.clearPreviewDomains === "function") {
+      this.scalarLayer.clearPreviewDomains();
+    }
+    if (this.dom.domainPreviewOverlay) {
+      this.dom.domainPreviewOverlay.innerHTML = "";
+    }
+    if (this.dom.domainPreviewCard) {
+      this.dom.domainPreviewCard.hidden = true;
+      this.dom.domainPreviewCard.innerHTML = "";
+    }
+  }
+
+  _updatePreviewOverlay() {
+    const state = this._previewState;
+    if (!state) return;
+
+    const map = this.mapEngine ? this.mapEngine.map : null;
+    const models = state.models || [];
+    const isMulti = models.length > 1;
+    const previewItems = [];
+    const tagFragments = [];
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 800;
+
+    models.forEach((m) => {
+      if (!m || !m.grid) return;
+      const g = m.grid;
+      const fam = this._getModelFamilyMeta(m);
+      let pxSpan = 999;
+      let isInView = true;
+
+      if (map && typeof map.project === "function") {
+        const pNW = map.project([g.lon_min, g.lat_max]);
+        const pSE = map.project([g.lon_max, g.lat_min]);
+        const pMid = map.project([0.5 * (g.lon_min + g.lon_max), 0.5 * (g.lat_min + g.lat_max)]);
+        const boxW = Math.abs(pSE.x - pNW.x);
+        const boxH = Math.abs(pSE.y - pNW.y);
+        pxSpan = Math.max(boxW, boxH);
+
+        const minX = Math.min(pNW.x, pSE.x);
+        const maxX = Math.max(pNW.x, pSE.x);
+        const minY = Math.min(pNW.y, pSE.y);
+        const maxY = Math.max(pNW.y, pSE.y);
+        isInView = maxX >= 0 && minX <= vw && maxY >= 0 && minY <= vh;
+
+        if (isInView) {
+          const isSmall = pxSpan < 90;
+          const anchorX = isSmall ? pMid.x : Math.min(pNW.x, pSE.x) + 8;
+          const anchorY = isSmall ? pMid.y - 16 : Math.min(pNW.y, pSE.y) + 8;
+          const clampedX = Math.max(24, Math.min(vw - 24, anchorX));
+          const clampedY = Math.max(66, Math.min(vh - 135, anchorY));
+          const alignClass = isSmall ? " centered" : "";
+          const badgeText = this._escapeHtml(m.badge || this._formatGridSpacing(m.resolution_m));
+          const tagText = state.mode === "auto" || state.mode === "model" ? `${this._escapeHtml(fam.label)} · ${badgeText}` : badgeText;
+          tagFragments.push(
+            `<div class="domain-map-tag${alignClass}" style="left:${clampedX.toFixed(1)}px;top:${clampedY.toFixed(1)}px;--tag-color:${fam.color};">${tagText}</div>`
+          );
+        }
+      }
+
+      const showBeacon = pxSpan < 38 || Number(m.resolution_m) <= 500;
+      previewItems.push({
+        gridMeta: g,
+        lineColor: fam.color,
+        fillColor: isMulti ? "rgba(15, 23, 42, 0.04)" : fam.fill,
+        glowColor: fam.glow,
+        lineWidth: isMulti ? 1.9 : 2.5,
+        glowWidth: isMulti ? 5.0 : 7.0,
+        showBeacon,
+        ringRadius: state.mode === "model" ? 13 : 10,
+      });
+    });
+
+    if (this.scalarLayer && typeof this.scalarLayer.setPreviewDomains === "function") {
+      this.scalarLayer.setPreviewDomains(previewItems);
+    }
+    if (this.dom.domainPreviewOverlay) {
+      this.dom.domainPreviewOverlay.innerHTML = tagFragments.join("");
+    }
+
+    const card = this.dom.domainPreviewCard;
+    if (!card) return;
+
+    if (state.mode === "auto") {
+      const countsByFam = this._groupModelsByFamily(models)
+        .map(
+          (grp) =>
+            `<span class="preview-chip"><span class="model-family-dot" style="background:${grp.meta.color};color:${grp.meta.color};"></span>${this._escapeHtml(grp.meta.label)}: ${grp.models.map((m) => this._escapeHtml(m.badge)).join(" / ")}</span>`
+        )
+        .join("");
+      card.style.setProperty("--preview-color", "#10b981");
+      card.innerHTML = `
+        <div class="preview-card-head">
+          <span class="preview-card-title">&#x2728; Auto Multi-Scale Switching</span>
+          <span class="preview-card-sub">${models.length} domains active by zoom</span>
+        </div>
+        <div class="preview-card-specs">${countsByFam}</div>
+      `;
+      card.hidden = false;
+      return;
+    }
+
+    if (state.mode === "family") {
+      const fam = state.familyMeta || this._getModelFamilyMeta(models[0]);
+      const chips = models
+        .map((m) => {
+          const g = m.grid || {};
+          const dims = g.nx && g.ny ? ` (${g.nx}&times;${g.ny})` : "";
+          const isAct = this.activeModel && this.activeModel.id === m.id;
+          return `<span class="preview-chip${isAct ? " is-active" : ""}">${this._escapeHtml(m.badge)}${dims}</span>`;
+        })
+        .join("");
+      card.style.setProperty("--preview-color", fam.color);
+      card.innerHTML = `
+        <div class="preview-card-head">
+          <span class="preview-card-title"><span class="model-family-dot" style="background:${fam.color};color:${fam.color};"></span>${this._escapeHtml(fam.label)}</span>
+          <span class="preview-card-sub">${models.length} domain${models.length === 1 ? "" : "s"} &middot; click to cycle</span>
+        </div>
+        <div class="preview-card-specs">${chips}</div>
+      `;
+      card.hidden = false;
+      return;
+    }
+
+    const m = models[0];
+    const fam = state.familyMeta || this._getModelFamilyMeta(m);
+    const g = m.grid || {};
+    const stepStr = this._formatGridSpacing(g.dx_m || m.resolution_m);
+    const boundsStr =
+      Number.isFinite(Number(g.lon_min)) && Number.isFinite(Number(g.lat_min))
+        ? `${Number(g.lon_min).toFixed(2)}&deg;&ndash;${Number(g.lon_max).toFixed(2)}&deg;E, ${Number(g.lat_min).toFixed(2)}&deg;&ndash;${Number(g.lat_max).toFixed(2)}&deg;N`
+        : "";
+    const dimsStr = g.nx && g.ny ? `${g.nx}&times;${g.ny}` : "";
+    const stepsCount = (m.timesteps || []).length;
+    const isAct = this.activeModel && this.activeModel.id === m.id;
+    const offScreen = this._getModelViewportFraction(m) <= 0.0;
+    const urbanTag = m.buildings_3d ? `<span class="preview-tag">3D Urban</span>` : "";
+    const activeTag = isAct ? `<span class="preview-tag is-active">Active</span>` : "";
+    const flyNote = offScreen ? `<span class="preview-tag is-warn">Click to center</span>` : "";
+
+    card.style.setProperty("--preview-color", fam.color);
+    card.innerHTML = `
+      <div class="preview-card-head">
+        <span class="preview-card-title"><span class="model-family-dot" style="background:${fam.color};color:${fam.color};"></span>${this._escapeHtml(m.name)}</span>
+        <span class="preview-card-badges">${activeTag}${urbanTag}${flyNote}</span>
+      </div>
+      <div class="preview-card-specs">
+        ${dimsStr ? `<span>${dimsStr} grid</span>` : ""}
+        ${stepStr ? `<span>&Delta;x ${this._escapeHtml(stepStr)}</span>` : ""}
+        ${boundsStr ? `<span>${boundsStr}</span>` : ""}
+        <span>${stepsCount} step${stepsCount === 1 ? "" : "s"}</span>
+      </div>
+    `;
+    card.hidden = false;
   }
 
   _isModelTemporallyValid(model, utcIso) {
@@ -771,6 +1138,24 @@ class DustyApp {
         this.autoModelMode = true;
         this._syncModelSelectorUI();
         this._evaluateAutoModel();
+      });
+      const showAutoPreview = () => {
+        if (!this.activeCycle || !this.activeCycle.models) return;
+        this._showDomainPreview({
+          mode: "auto",
+          models: this.activeCycle.models,
+        });
+      };
+      this.dom.modelAutoBtn.addEventListener("mouseenter", showAutoPreview);
+      this.dom.modelAutoBtn.addEventListener("focus", showAutoPreview);
+    }
+
+    if (this.dom.modelSelectorBar) {
+      this.dom.modelSelectorBar.addEventListener("mouseleave", () => this._clearDomainPreview());
+      this.dom.modelSelectorBar.addEventListener("focusout", (e) => {
+        if (!e.relatedTarget || !this.dom.modelSelectorBar.contains(e.relatedTarget)) {
+          this._clearDomainPreview();
+        }
       });
     }
 

@@ -110,6 +110,7 @@ sed -i -E "s|href=\"css/styles\.css(\?[^\"]*)?\"|href=\"css/styles.css?v=${ASSET
 mkdir -p "${OUTPUT_DIR}/css" "${OUTPUT_DIR}/js" "${OUTPUT_DIR}/vendor"
 cp -rf "${REPO_DIR}/web/css/"* "${OUTPUT_DIR}/css/"
 cp -rf "${REPO_DIR}/web/js/"* "${OUTPUT_DIR}/js/"
+sed -i -E "s|from \"(\./[a-z0-9_-]+\.js)(\?[^\"]*)?\"|from \"\1?v=${ASSET_VER}\"|g" "${OUTPUT_DIR}/js/"*.js
 if [ -d "${REPO_DIR}/web/vendor" ]; then
     cp -rf "${REPO_DIR}/web/vendor/"* "${OUTPUT_DIR}/vendor/"
 fi
