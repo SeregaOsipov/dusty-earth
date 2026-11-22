@@ -140,6 +140,11 @@ export class ScalarLayer {
       );
     }
 
+    const overlayBeforeId =
+      typeof this.mapEngine.get3DBeforeLayerId === "function"
+        ? this.mapEngine.get3DBeforeLayerId()
+        : beforeId;
+
     if (!map.getSource(OUTLINE_SOURCE_ID)) {
       map.addSource(OUTLINE_SOURCE_ID, {
         type: "geojson",
@@ -158,7 +163,7 @@ export class ScalarLayer {
             "line-dasharray": [4, 3],
           },
         },
-        beforeId
+        overlayBeforeId
       );
     }
 
@@ -178,8 +183,7 @@ export class ScalarLayer {
             "fill-color": ["coalesce", ["get", "fillColor"], "rgba(56, 189, 248, 0.10)"],
             "fill-opacity": 1,
           },
-        },
-        beforeId
+        }
       );
     }
     if (!map.getLayer(PREVIEW_GLOW_LAYER_ID)) {
@@ -193,8 +197,7 @@ export class ScalarLayer {
             "line-width": ["coalesce", ["get", "glowWidth"], 6.5],
             "line-blur": 3,
           },
-        },
-        beforeId
+        }
       );
     }
     if (!map.getLayer(PREVIEW_LINE_LAYER_ID)) {
@@ -207,8 +210,7 @@ export class ScalarLayer {
             "line-color": ["coalesce", ["get", "lineColor"], "#38bdf8"],
             "line-width": ["coalesce", ["get", "lineWidth"], 2.2],
           },
-        },
-        beforeId
+        }
       );
     }
 

@@ -150,6 +150,24 @@ export class MapEngine {
     return sym ? sym.id : undefined;
   }
 
+  get3DBeforeLayerId() {
+    if (!this.map) return undefined;
+    const style = this.map.getStyle();
+    if (!style || !Array.isArray(style.layers)) return undefined;
+    let last2DIdx = -1;
+    for (let i = 0; i < style.layers.length; i++) {
+      const lyr = style.layers[i];
+      if (lyr.id && lyr.id.startsWith("dusty-")) continue;
+      if (lyr.type === "background" || lyr.type === "raster" || lyr.type === "fill" || lyr.type === "line") {
+        last2DIdx = i;
+      }
+    }
+    if (last2DIdx >= 0 && last2DIdx + 1 < style.layers.length) {
+      return style.layers[last2DIdx + 1].id;
+    }
+    return undefined;
+  }
+
   _applyEnglishLabels() {
     if (!this.map) return;
     const style = this.map.getStyle();

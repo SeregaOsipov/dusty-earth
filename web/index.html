@@ -54,8 +54,8 @@
         <span>🌳 3D Canopy</span>
         <span class="toggle-state" style="font-size:0.65rem;">ON</span>
       </button>
-      <button id="btn-settings" class="toggle-btn" title="Adjust Streamline Settings">
-        <span>⚙️ Particle FX</span>
+      <button id="btn-settings" class="toggle-btn" title="Adjust Streamline &amp; 3D Building Settings">
+        <span>⚙️ Visual FX</span>
         <span>&rsaquo;</span>
       </button>
       <button id="btn-model-info" class="toggle-btn" title="System &amp; Scientific Attribution (I)" aria-haspopup="dialog" aria-controls="model-info-modal">
@@ -68,7 +68,7 @@
   <!-- Settings Panel -->
   <div id="settings-panel" class="settings-panel">
     <div class="settings-title">
-      <span>Streamline Settings</span>
+      <span>Visual &amp; Streamline FX</span>
       <button id="settings-close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.1rem;">&times;</button>
     </div>
     <div class="setting-row">
@@ -84,6 +84,13 @@
         <strong id="setting-particle-speed-val">2x</strong>
       </div>
       <input type="range" id="setting-particle-speed" class="setting-slider" min="0.5" max="3.0" step="0.25" value="2.0" />
+    </div>
+    <div class="setting-row" style="border-top:1px solid var(--border-subtle);padding-top:0.6rem;margin-top:0.15rem;">
+      <div class="setting-label">
+        <span>3D Building Opacity</span>
+        <strong id="setting-bldg-opacity-val">100%</strong>
+      </div>
+      <input type="range" id="setting-bldg-opacity" class="setting-slider" min="0.30" max="1.00" step="0.05" value="1.00" />
     </div>
   </div>
 

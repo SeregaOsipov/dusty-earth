@@ -80,6 +80,8 @@ class DustyApp {
       particleCountVal: document.getElementById("setting-particle-count-val"),
       particleSpeedSlider: document.getElementById("setting-particle-speed"),
       particleSpeedVal: document.getElementById("setting-particle-speed-val"),
+      bldgOpacitySlider: document.getElementById("setting-bldg-opacity"),
+      bldgOpacityVal: document.getElementById("setting-bldg-opacity-val"),
       // Model Info & Scientific Attribution Modal
       modelInfoBtn: document.getElementById("btn-model-info"),
       attrLeadTrigger: document.getElementById("attr-lead-trigger"),
@@ -1219,6 +1221,18 @@ class DustyApp {
       this.dom.particleSpeedVal.textContent = `${val}x`;
       this.windParticles.setSpeed(val * 0.00035);
     });
+
+    if (this.dom.bldgOpacitySlider) {
+      this.dom.bldgOpacitySlider.addEventListener("input", (e) => {
+        const val = Number(e.target.value);
+        if (this.dom.bldgOpacityVal) {
+          this.dom.bldgOpacityVal.textContent = `${Math.round(val * 100)}%`;
+        }
+        if (this.buildingsLayer) {
+          this.buildingsLayer.setBuildingOpacity(val);
+        }
+      });
+    }
 
     const openModal = () => this.openModelInfoModal();
     const closeModal = () => this.closeModelInfoModal();
