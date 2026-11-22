@@ -735,7 +735,6 @@ class DustyApp {
         }
       }
 
-      const showBeacon = pxSpan < 38 || Number(m.resolution_m) <= 500;
       previewItems.push({
         gridMeta: g,
         lineColor: fam.color,
@@ -743,8 +742,6 @@ class DustyApp {
         glowColor: fam.glow,
         lineWidth: isMulti ? 1.9 : 2.5,
         glowWidth: isMulti ? 5.0 : 7.0,
-        showBeacon,
-        ringRadius: state.mode === "model" ? 13 : 10,
       });
     });
 

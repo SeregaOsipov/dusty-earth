@@ -34,12 +34,9 @@ const FADE_LAYER_ID = "dusty-scalar-fade-layer";
 const OUTLINE_SOURCE_ID = "dusty-domain-outline-source";
 const OUTLINE_LAYER_ID = "dusty-domain-outline-layer";
 const PREVIEW_POLY_SOURCE_ID = "dusty-domain-preview-poly-source";
-const PREVIEW_POINT_SOURCE_ID = "dusty-domain-preview-point-source";
 const PREVIEW_FILL_LAYER_ID = "dusty-domain-preview-fill";
 const PREVIEW_GLOW_LAYER_ID = "dusty-domain-preview-glow";
 const PREVIEW_LINE_LAYER_ID = "dusty-domain-preview-line";
-const PREVIEW_BEACON_RING_LAYER_ID = "dusty-domain-preview-beacon-ring";
-const PREVIEW_BEACON_DOT_LAYER_ID = "dusty-domain-preview-beacon-dot";
 
 const EMPTY_FC = { type: "FeatureCollection", features: [] };
 
@@ -215,45 +212,6 @@ export class ScalarLayer {
       );
     }
 
-    if (!map.getSource(PREVIEW_POINT_SOURCE_ID)) {
-      map.addSource(PREVIEW_POINT_SOURCE_ID, {
-        type: "geojson",
-        data: EMPTY_FC,
-      });
-    }
-    if (!map.getLayer(PREVIEW_BEACON_RING_LAYER_ID)) {
-      map.addLayer(
-        {
-          id: PREVIEW_BEACON_RING_LAYER_ID,
-          type: "circle",
-          source: PREVIEW_POINT_SOURCE_ID,
-          paint: {
-            "circle-radius": ["coalesce", ["get", "ringRadius"], 11],
-            "circle-color": ["coalesce", ["get", "fillColor"], "rgba(16, 185, 129, 0.22)"],
-            "circle-stroke-color": ["coalesce", ["get", "lineColor"], "#10b981"],
-            "circle-stroke-width": 2,
-          },
-        },
-        beforeId
-      );
-    }
-    if (!map.getLayer(PREVIEW_BEACON_DOT_LAYER_ID)) {
-      map.addLayer(
-        {
-          id: PREVIEW_BEACON_DOT_LAYER_ID,
-          type: "circle",
-          source: PREVIEW_POINT_SOURCE_ID,
-          paint: {
-            "circle-radius": 3.5,
-            "circle-color": ["coalesce", ["get", "lineColor"], "#10b981"],
-            "circle-stroke-color": "#070b14",
-            "circle-stroke-width": 1.2,
-          },
-        },
-        beforeId
-      );
-    }
-
     if (this._hasActiveField && this.currentBuffer && this.gridMeta && this.varConfig) {
       this._syncScalarToMap();
     }
@@ -340,11 +298,9 @@ export class ScalarLayer {
     const map = this.mapEngine ? this.mapEngine.map : null;
     if (!map) return;
     const polySrc = map.getSource(PREVIEW_POLY_SOURCE_ID);
-    const ptSrc = map.getSource(PREVIEW_POINT_SOURCE_ID);
-    if (!polySrc && !ptSrc) return;
+    if (!polySrc) return;
 
     const polyFeatures = [];
-    const pointFeatures = [];
     for (const item of this.previewItems) {
       const gm = item.gridMeta;
       const feat = getDomainPolygonFeature(gm);
@@ -356,33 +312,9 @@ export class ScalarLayer {
         glowWidth: typeof item.glowWidth === "number" ? item.glowWidth : 6.5,
       };
       polyFeatures.push(feat);
-
-      if (item.showBeacon) {
-        const lonMid = 0.5 * (Number(gm.lon_min) + Number(gm.lon_max));
-        const latMid = 0.5 * (Number(gm.lat_min) + Number(gm.lat_max));
-        if (Number.isFinite(lonMid) && Number.isFinite(latMid)) {
-          pointFeatures.push({
-            type: "Feature",
-            properties: {
-              lineColor: item.lineColor || "#10b981",
-              fillColor: item.fillColor || "rgba(16, 185, 129, 0.22)",
-              ringRadius: typeof item.ringRadius === "number" ? item.ringRadius : 11,
-            },
-            geometry: {
-              type: "Point",
-              coordinates: [lonMid, latMid],
-            },
-          });
-        }
-      }
     }
 
-    if (polySrc) {
-      polySrc.setData({ type: "FeatureCollection", features: polyFeatures });
-    }
-    if (ptSrc) {
-      ptSrc.setData({ type: "FeatureCollection", features: pointFeatures });
-    }
+    polySrc.setData({ type: "FeatureCollection", features: polyFeatures });
   }
 
   beginModelTransition() {
