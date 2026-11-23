@@ -10,12 +10,12 @@
 
 ## Key Highlights
 
-- **Windy-Style Multi-Model Switching & Auto-Zoom Hysteresis**:
-  Co-registers `WRF-Chem 10 km` (`d01`), `WRF-Chem 2 km` (`d02`), `PALM-4U 100 m` (`SLUrb`), and `PALM-4U 10 m / 1 m` inside a single cycle manifest (`manifest.json`), with automatic zoom-driven switching hysteresis (`6.8/6.3`, `10.5/10.0`, `12.2/11.7`, `14.0/13.5`), auto-tilt on urban LES zoom-in, and manual model pinning.
-- **WebGL Scene-Graph `CanvasSource` & 3D Urban Morphology**:
-  Renders scalar fields natively inside MapLibre's WebGL scene graph via `CanvasSource` (`nearest` texel filtering on PALM building masks), overlaid with 1:1 dissolved 3D static-driver buildings and 3-tier LAD tree canopy polygons (`buildings_extractor.py`, `buildings-layer.js`) plus a regional OpenFreeMap 3D context cutout.
-- **Four Operational Variable Tabs (`Dust & Aerosols`, `Gases`, `GHGs`, `Meteorology`)**:
-  Covers `Surface Dust`, `Column Dust`, `PM2.5`, `PM10`, `NO₂`, `NOx`, `Ozone (O₃)`, `SO₂`, `CO`, **greenhouse gases (`CO₂` in `ppm` [415–465], `CH₄` in `ppbv` [1850–2650] with model-agnostic `ppmv` / `kg kg-1` / `mol mol-1` converters and `0.1 ppm` CO₂ probe precision)**, `10m Wind`, `2m Temperature`, `Rain Rate`, `Accum. Rain`, `Cloud Cover`, `Solar GHI`, and `Net Solar SW`.
+- **Windy-Style Multi-Model Resolution Selector & Live Hover Domain Preview**:
+  Co-registers **6 resolution tiers across 3 model families** inside a single cycle manifest (`manifest.json`) — **`WRF-Chem`** (`10 km d01`, `2 km d02`), **`ICON-ART`** (`4.86 km DOM01`, `2.43 km DOM02`), and **`PALM-4U`** (`100 m SLUrb`, `10 m / 1 m LES`) — grouped cleanly by model family and resolution in the selector bar (`_groupModelsByFamily`). Hovering or focusing a family group or resolution chip projects a live crisp geographic footprint outline & corner label on the map (`_showDomainPreview`, without center beacon clutter), alongside zoom-driven auto-switching hysteresis (`6.9/6.4`, `5.7/5.3`, `10.5/10.0`, `12.2/11.7`, `14.0/13.5`), auto-tilt on urban LES zoom-in, and manual model pinning.
+- **WebGL Scene-Graph `CanvasSource`, 3D Urban Morphology & Building Opacity Slider**:
+  Renders scalar fields natively inside MapLibre's WebGL scene graph via `CanvasSource` (`nearest` texel filtering on PALM building masks), overlaid with 1:1 dissolved 3D static-driver buildings and 3-tier LAD tree canopy polygons (`buildings_extractor.py`, `buildings-layer.js`) plus a regional OpenFreeMap 3D context cutout. Includes proper WebGL layer z-ordering (`get3DBeforeLayerId`), ground-contact ambient occlusion outlines (`OSM_BLDG_AO_LAYER`, `PALM_BLDG_AO_LAYER`), directional roof/wall map lighting (`map.setLight`), and an interactive **3D Building Opacity slider (`30%–100%`)** in Settings (`setBuildingOpacity`).
+- **Four Operational Variable Tabs (`Dust & Aerosols`, `Gases`, `GHGs`, `Meteorology`, Default `wind10m`)**:
+  Defaults to **`10m Wind` (`wind10m`)** on initial page load alongside animated streamlines, and covers `Surface Dust`, `Column Dust`, `PM2.5`, `PM10`, `NO₂`, `NOx`, `Ozone (O₃)`, `SO₂`, `CO`, **greenhouse gases (`CO₂` in `ppm` [415–465], `CH₄` in `ppbv` [1850–2650] with model-agnostic `ppmv` / `kg kg-1` / `mol mol-1` converters and `0.1 ppm` CO₂ probe precision)**, `10m Wind`, `2m Temperature`, `Rain Rate`, `Accum. Rain`, `Cloud Cover`, `Solar GHI`, and `Net Solar SW`.
 - **Constant Physical Playback Speed (`0.25–8 h/s`) Across Mixed Cadences**:
   Driven by a virtual UTC forecast clock (`playheadMs` / `syncToUtc`, default **`3h/s`**) so real-world advection speed stays constant when switching between `1 h`, `15 min`, `10 min` WRF, and `1 min` PALM outputs — finer output frequencies simply play smoother.
 - **`1 m` Spatial & `1-Minute` (`1,440`-Step) Streaming Scalability**:
@@ -86,31 +86,34 @@ Run `dusty-export` against any standard WRF-Chem or NetCDF forecast file or dire
 dusty-export \
   --input /scratch/sims/WRF_run/operational_forecast/ag_weekly_7day_cycle/output/20261114_00 \
   --palm-root /scratch/sims/PALM_run/operational_forecast \
+  --icon-root /scratch/sims/ICON_run/operational_forecast \
   --output /scratch/sims/WRF_run/operational_forecast/portal_web \
   --cycle 20261114_00 \
   --workers 6
 ```
 
 Parameters:
-- `-i, --input`: Path to a NetCDF/wrfout file or directory containing model outputs.
+- `-i, --input`: Path to a NetCDF/`wrfout` file or directory containing model outputs (`wrfout`, `icon-art`, `palm-4u`, `cams`).
 - `-o, --output`: Web portal root directory where `index.html`, `manifest.json`, and `cycles/` reside (served at `http://10.161.93.135:8080/`, while the legacy static WebP portal resides at `/static`).
 - `-c, --cycle`: (Optional) Forecast cycle ID (e.g. `20261114_00`). Automatically detected if omitted.
 - `--palm-root`: (Optional) Root directory of PALM-4U runs (`doha_forecast_100m`, `doha_forecast_chem`) to auto-discover and co-register matching cycle runs alongside static 3D buildings/canopy.
+- `--icon-root`: (Optional) Root directory of ICON-ART simulations (e.g. `/scratch/sims/ICON_run/operational_forecast`) to auto-discover matching `cycle_id` outputs.
 - `--extra-input`: (Optional) Additional model output directories/files to co-register in the cycle.
 - `-v, --variables`: (Optional) Comma-separated / space-separated variable IDs to export (defaults to all registered).
 - `-w, --workers`: Number of parallel multiprocessing workers for batched grid extraction (default: `min(8, cpu_count)`).
 
-### 3. Operational Automation (Stage 4 Integration)
+### 3. Operational Automation & Cache Hygiene (Stage 4 Integration)
 
-Automatically invoked by `/home/osipovs/Models/operational-forecasting/scripts/run_portal_postproc.sh` at the end of every forecast simulation (or run standalone) to deploy new cycles (including auto-detected PALM-4U runs via `--palm-root`) to the root portal and prune cycles older than 5 days:
+Automatically invoked by `/home/osipovs/Models/operational-forecasting/scripts/run_portal_postproc.sh` at the end of every forecast simulation (or run standalone) to deploy new cycles to the root portal and prune cycles older than 5 days. `deploy_to_portal.sh` automatically discovers `PALM_RUN_ROOT` (default `${WORK_DIR:-/scratch/sims}/PALM_run/operational_forecast`, passed as `--palm-root` to `dusty.cli`) and `ICON_RUN_ROOT` (default `${WORK_DIR:-/scratch/sims}/ICON_run/operational_forecast`, passed as `--icon-root` to `dusty.cli`), and stamps `?v=<UTC_TIMESTAMP>` cache-busting query strings onto `css/styles.css` and `js/*.js` module imports:
 
 ```bash
 ./scripts/deploy_to_portal.sh \
   --input /scratch/sims/WRF_run/operational_forecast/ag_weekly_7day_cycle/output/20261114_00 \
-  --palm-root /scratch/sims/PALM_run/operational_forecast \
   --output /scratch/sims/WRF_run/operational_forecast/portal_web \
   --retention-days 5
 ```
+
+When served via [`serve_portal.py`](file:///home/osipovs/Models/operational-forecasting/postproc/serve_portal.py), the HTML/JS/CSS shell, `manifest.json`, and unversioned `.bin` tiles are served with `no-store`/`no-cache` revalidation headers so UI updates and incremental forecast segments appear immediately without manual hard reloads, while query-versioned (`?v=...`) `/cycles/` assets retain `immutable` caching.
 
 ---
 
