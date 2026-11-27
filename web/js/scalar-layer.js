@@ -74,7 +74,7 @@ export class ScalarLayer {
     this._hasActiveField = false;
 
     this.lut = new Uint8ClampedArray(256 * 4);
-    this.opacity = 0.85;
+    this.opacity = 0.82;
     this.visible = true;
     this.showDomainOutline = false;
     this.previewItems = [];
@@ -84,11 +84,19 @@ export class ScalarLayer {
     }
   }
 
+  setOpacity(opacity) {
+    this.opacity = Math.max(0.1, Math.min(1.0, Number(opacity) || 0.82));
+    this._renderWithFade();
+  }
+
   attachToMap() {
     const map = this.mapEngine ? this.mapEngine.map : null;
     if (!map || !this.mapEngine.styleReady) return;
 
-    const beforeId = this.mapEngine.getFirstSymbolLayerId();
+    const beforeId =
+      typeof this.mapEngine.getScalarBeforeLayerId === "function"
+        ? this.mapEngine.getScalarBeforeLayerId()
+        : this.mapEngine.getFirstSymbolLayerId();
     const initialQuad = this.gridMeta ? getGridQuad(this.gridMeta) : getGridQuad(null);
     const fadeQuad = this.fadeMeta ? getGridQuad(this.fadeMeta) : initialQuad;
 
@@ -319,7 +327,8 @@ export class ScalarLayer {
     polySrc.setData({ type: "FeatureCollection", features: polyFeatures });
   }
 
-  beginModelTransition() {
+  beginModelTransition(durationMs = 200) {
+    this.fadeDurationMs = Math.max(80, Number(durationMs) || 200);
     if (!this._hasActiveField || !this.currentBuffer || !this.gridMeta || this.offscreenCanvas.width <= 1) {
       this.fadeStartTime = 0;
       return;
@@ -545,12 +554,25 @@ export class ScalarLayer {
     const vmin = varConfig.vmin;
     const vmax = varConfig.vmax;
     const range = vmax - vmin || 1.0;
+    const isLog = Boolean(varConfig.log_scale) && vmin > 0 && vmax > vmin;
+    const logMin = isLog ? Math.log10(vmin) : 0.0;
+    const logRange = isLog ? Math.log10(vmax) - logMin || 1.0 : 1.0;
 
     if (stride === 1) {
       const len = nx * ny;
       for (let i = 0; i < len; i++) {
         const val = buffer[i];
-        if (Number.isNaN(val)) {
+        if (isLog) {
+          if (!Number.isFinite(val) || val <= 0 || val < vmin) {
+            data32[i] = 0;
+          } else if (val >= vmax) {
+            data32[i] = lut32[255];
+          } else {
+            const norm = (Math.log10(val) - logMin) / logRange;
+            const lutIdx = Math.min(255, Math.max(0, (norm * 255.0) | 0));
+            data32[i] = lut32[lutIdx];
+          }
+        } else if (Number.isNaN(val)) {
           data32[i] = 0;
         } else if (val <= vmin) {
           data32[i] = lut32[0];
@@ -568,7 +590,17 @@ export class ScalarLayer {
         const rowOffset = r * nx;
         for (let c = 0; c < nx; c += stride) {
           const val = buffer[rowOffset + c];
-          if (Number.isNaN(val)) {
+          if (isLog) {
+            if (!Number.isFinite(val) || val <= 0 || val < vmin) {
+              data32[outIdx++] = 0;
+            } else if (val >= vmax) {
+              data32[outIdx++] = lut32[255];
+            } else {
+              const norm = (Math.log10(val) - logMin) / logRange;
+              const lutIdx = Math.min(255, Math.max(0, (norm * 255.0) | 0));
+              data32[outIdx++] = lut32[lutIdx];
+            }
+          } else if (Number.isNaN(val)) {
             data32[outIdx++] = 0;
           } else if (val <= vmin) {
             data32[outIdx++] = lut32[0];

@@ -18,6 +18,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CYCLE=""
 INPUT_DIR=""
 OUTPUT_DIR="/scratch/sims/WRF_run/operational_forecast/portal_web"
+RN_RUN_ROOT="${RN_RUN_ROOT:-${WORK_DIR:-/scratch/sims}/WRF_run/operational_forecast_rn}"
 WORKERS=16
 RETENTION_DAYS=5
 
@@ -33,6 +34,7 @@ Options:
   --output PATH         Target web portal directory (default: ${OUTPUT_DIR})
   --workers N           Number of parallel export processes (default: ${WORKERS})
   --retention-days N    Number of daily cycles to retain (default: ${RETENTION_DAYS})
+  --rn-root PATH        Optional radionuclide derived outputs root (default: ${RN_RUN_ROOT})
   -h, --help            Show this help message
 EOF
     exit 0
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --retention-days)
             RETENTION_DAYS="$2"
+            shift 2
+            ;;
+        --rn-root)
+            RN_RUN_ROOT="$2"
             shift 2
             ;;
         -h|--help)
@@ -114,6 +120,10 @@ sed -i -E "s|from \"(\./[a-z0-9_-]+\.js)(\?[^\"]*)?\"|from \"\1?v=${ASSET_VER}\"
 if [ -d "${REPO_DIR}/web/vendor" ]; then
     cp -rf "${REPO_DIR}/web/vendor/"* "${OUTPUT_DIR}/vendor/"
 fi
+if [ -d "${REPO_DIR}/web/assets" ]; then
+    mkdir -p "${OUTPUT_DIR}/assets"
+    cp -rf "${REPO_DIR}/web/assets/"* "${OUTPUT_DIR}/assets/"
+fi
 
 # 4. Execute dusty-export Binary Grid Pipeline
 echo "[Dusty Earth] Exporting binary Float32/Uint16 grids from ${INPUT_DIR}..."
@@ -130,6 +140,10 @@ fi
 ICON_RUN_ROOT="${ICON_RUN_ROOT:-${WORK_DIR:-/scratch/sims}/ICON_run/operational_forecast}"
 if [ -n "${ICON_RUN_ROOT}" ] && [ -d "${ICON_RUN_ROOT}" ]; then
     CMD+=(--icon-root "${ICON_RUN_ROOT}")
+fi
+
+if [ -n "${RN_RUN_ROOT}" ] && [ -d "${RN_RUN_ROOT}" ]; then
+    CMD+=(--rn-root "${RN_RUN_ROOT}")
 fi
 
 "${CMD[@]}"

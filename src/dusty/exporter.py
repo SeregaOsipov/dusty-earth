@@ -41,7 +41,7 @@ class ModelSourceSpec:
     name: str
     short_name: str
     badge: str
-    model_family: str  # "wrf" | "palm" | "generic"
+    model_family: str  # "wrf" | "palm" | "icon" | "radionuclide" | "generic"
     resolution_m: float
     files: List[Path]
     aux_file: Optional[Path] = None
@@ -51,6 +51,7 @@ class ModelSourceSpec:
     exit_auto_zoom: float = 0.0
     primary_var_ids: List[str] = field(default_factory=list)
     aux_var_ids: List[str] = field(default_factory=list)
+    extra_meta: Dict[str, Any] = field(default_factory=dict)
 
 
 def open_dataset_safe(path: Union[str, Path]) -> xr.Dataset:
@@ -332,6 +333,7 @@ def _discover_models(
     cycle_str: Optional[str],
     palm_root: Optional[Union[str, Path]] = None,
     icon_root: Optional[Union[str, Path]] = None,
+    rn_root: Optional[Union[str, Path]] = None,
     extra_inputs: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Tuple[str, datetime, List[ModelSourceSpec]]:
     """Discover all model streams (WRF d01..d0N, PALM-4U domains, or generic NetCDF) for the cycle."""
@@ -489,6 +491,65 @@ def _discover_models(
                     exit_auto_zoom=exit_z,
                 ))
 
+    # 2c. Discover Radionuclide dispersion derived outputs for matching cycle_id under rn_root
+    if rn_root is not None:
+        rr = Path(rn_root)
+        if rr.is_dir():
+            rn_files: List[Path] = []
+            for base_cand in (rr / "derived" / cycle_id, rr / cycle_id, rr):
+                if base_cand.is_dir():
+                    found = sorted(base_cand.glob(f"rn_derived_*_{cycle_id}.nc"))
+                    if not found:
+                        found = [
+                            f for f in sorted(base_cand.glob("rn_derived_*.nc"))
+                            if re.search(r"_\d{8}_\d{2}\.nc$", f.name) is None or f"_{cycle_id}.nc" in f.name
+                        ]
+                    if found:
+                        rn_files = [f for f in found if f.is_file() or f.is_symlink()]
+                        break
+            for rf in rn_files:
+                with open_dataset_safe(rf) as rds:
+                    _, _, gm = extract_coordinates(rds)
+                    plant_id = str(rds.attrs.get("PLANT_ID", "")).strip()
+                    if not plant_id:
+                        m = re.match(rf"^rn_derived_(.+?)_{re.escape(cycle_id)}\.nc$", rf.name)
+                        plant_id = m.group(1) if m else rf.stem.replace("rn_derived_", "")
+                    plant_name = str(rds.attrs.get("PLANT_NAME", plant_id.title())).strip()
+                    src_lat = rds.attrs.get("SOURCE_LAT")
+                    src_lon = rds.attrs.get("SOURCE_LON")
+                clean_plant = plant_name.replace(" NPP", "").strip() or plant_id.title()
+                res_m = gm.dx_m if gm.dx_m > 0 else 10000.0
+                badge = format_resolution_badge(res_m)
+
+                extra_meta: Dict[str, Any] = {}
+                impact_file = rf.parent / f"qatar_impact_{plant_id}_{cycle_id}.json"
+                if impact_file.is_file():
+                    try:
+                        extra_meta["radionuclide_meta"] = json.loads(impact_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                if "radionuclide_meta" not in extra_meta:
+                    rn_meta_fallback: Dict[str, Any] = {"cycle_id": cycle_id, "plant_id": plant_id, "plant_name": plant_name}
+                    if src_lat is not None and np.isfinite(float(src_lat)):
+                        rn_meta_fallback["source_lat"] = float(src_lat)
+                    if src_lon is not None and np.isfinite(float(src_lon)):
+                        rn_meta_fallback["source_lon"] = float(src_lon)
+                    extra_meta["radionuclide_meta"] = rn_meta_fallback
+
+                specs.append(ModelSourceSpec(
+                    id=f"rn_{plant_id}",
+                    name=f"Radionuclide — {clean_plant} ({badge})",
+                    short_name=f"☢ {clean_plant} {badge}",
+                    badge=badge,
+                    model_family="radionuclide",
+                    resolution_m=res_m,
+                    files=[rf],
+                    domain_tag="d01",
+                    min_auto_zoom=99.0,
+                    exit_auto_zoom=99.0,
+                    extra_meta=extra_meta,
+                ))
+
     # 3. Discover any explicit extra inputs
     if extra_inputs:
         for ei in extra_inputs:
@@ -510,8 +571,10 @@ def _discover_models(
         if cnt > 1:
             sp.id = f"{sp.id}_{cnt}"
 
-    # Order coarsest (lowest zoom) -> finest (highest zoom)
-    specs.sort(key=lambda s: (-s.resolution_m, s.id))
+    # Order non-radionuclide coarsest (lowest zoom) -> finest (highest zoom);
+    # keep radionuclide emergency scenarios after primary air-quality models so
+    # wrf_d01 remains models[0] (default_model).
+    specs.sort(key=lambda s: (1 if s.model_family == "radionuclide" else 0, -s.resolution_m, s.id))
     specs[0].min_auto_zoom = 0.0
     specs[0].exit_auto_zoom = 0.0
 
@@ -521,9 +584,24 @@ def _discover_models(
 def _is_field_valid_at_t0(ds: xr.Dataset, var_cfg: VariableConfig, static_ds: Optional[xr.Dataset]) -> bool:
     try:
         ext = extract_variable_field(ds, var_cfg, time_idx=0, static_ds=static_ds)
-        return bool(np.isfinite(ext.scalar).any())
+        if np.isfinite(ext.scalar).any():
+            return True
     except Exception:
-        return False
+        pass
+    nt = 0
+    for dim_name in ("Time", "time", "XTIME"):
+        if dim_name in ds.sizes:
+            nt = int(ds.sizes[dim_name])
+            break
+    if nt > 1:
+        for probe_idx in (min(1, nt - 1), nt - 1):
+            try:
+                ext = extract_variable_field(ds, var_cfg, time_idx=probe_idx, static_ds=static_ds)
+                if np.isfinite(ext.scalar).any():
+                    return True
+            except Exception:
+                continue
+    return False
 
 
 def _write_array_bin(arr: np.ndarray, out_path: Path, use_uint16: bool) -> Dict[str, Any]:
@@ -767,11 +845,12 @@ def export_forecast(
     registry: Optional[VariableRegistry] = None,
     palm_root: Optional[Union[str, Path]] = None,
     icon_root: Optional[Union[str, Path]] = None,
+    rn_root: Optional[Union[str, Path]] = None,
     extra_inputs: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Path:
     """
     Main multi-model export engine:
-      1. Discovers WRF nested domains, ICON-ART, PALM-4U LES simulations, or generic NetCDFs.
+      1. Discovers WRF nested domains, ICON-ART, PALM-4U LES simulations, Radionuclide scenarios, or generic NetCDFs.
       2. Matches valid variables per model against registry (filtering all-NaN dummies).
       3. Uses ProcessPoolExecutor batches to dump Float32 / Uint16 binary buffers at native timesteps.
       4. Compiles and updates manifest.json with backward-compatible top-level defaults + models[].
@@ -785,15 +864,33 @@ def export_forecast(
         cycle_str=cycle_str,
         palm_root=palm_root,
         icon_root=icon_root,
+        rn_root=rn_root,
         extra_inputs=extra_inputs,
     )
 
     print(f"[Dusty Earth] Cycle ID: {cycle_id} ({cycle_dt.strftime('%Y-%m-%d %H:%M UTC')})")
     print(f"[Dusty Earth] Discovered {len(specs)} model stream(s): {[f'{s.id} ({s.badge})' for s in specs]}")
 
+    prev_models_by_id: Dict[str, Dict[str, Any]] = {}
+    manifest_file = out_dir / "manifest.json"
+    if manifest_file.is_file():
+        try:
+            manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            for c in manifest_data.get("cycles", []):
+                if c.get("id") == cycle_id:
+                    for mod in c.get("models", []):
+                        if mod.get("id"):
+                            prev_models_by_id[mod["id"]] = mod
+                    break
+        except Exception:
+            prev_models_by_id = {}
+
     cycle_out_dir = out_dir / "cycles" / cycle_id
-    if cycle_out_dir.exists():
-        shutil.rmtree(cycle_out_dir, ignore_errors=True)
+    cycle_out_dir.mkdir(parents=True, exist_ok=True)
+    active_model_ids = {s.id for s in specs}
+    for sub in list(cycle_out_dir.iterdir()):
+        if sub.is_dir() and sub.name not in active_model_ids:
+            shutil.rmtree(sub, ignore_errors=True)
 
     models_meta: List[Dict[str, Any]] = []
     var_filter = set(variables) if variables else None
@@ -887,7 +984,8 @@ def export_forecast(
 
         n_tasks = len(tasks)
         total_cell_steps = grid_meta.nx * grid_meta.ny * max(1, n_tasks)
-        use_uint16 = (
+        is_log_or_rn = (sp.model_family == "radionuclide") or any(v.log_scale for v in all_model_vars)
+        use_uint16 = (not is_log_or_rn) and (
             (grid_meta.nx * grid_meta.ny) > QUANTIZE_CELL_THRESHOLD
             or total_cell_steps > QUANTIZE_TOTAL_CELL_STEPS_THRESHOLD
         )
@@ -902,13 +1000,88 @@ def export_forecast(
             f"vars={len(all_model_vars)}"
         )
 
-        print(f"[Dusty Earth] [{sp.id}] Processing {n_tasks} timestep(s) using {workers} worker(s)...")
-        timesteps_results: List[Dict[str, Any]] = []
-        if workers <= 1 or n_tasks <= 4:
-            timesteps_results.extend(_export_timestep_batch_task(tasks))
+        reused_results: List[Dict[str, Any]] = []
+        pending_tasks: List[Dict[str, Any]] = []
+        src_mtime_cache: Dict[str, int] = {}
+        expected_var_ids = [v.id for v in all_model_vars]
+
+        prev_model = prev_models_by_id.get(sp.id)
+        prev_timesteps = prev_model.get("timesteps", []) if prev_model else []
+        prev_compat = False
+        if prev_model and prev_timesteps:
+            prev_grid = prev_model.get("grid", {})
+            prev_var_ids = [v.get("id") for v in prev_model.get("variables", [])]
+            prev_enc = prev_model.get("encoding")
+            if not prev_enc:
+                for pfiles in prev_timesteps[0].get("files", {}).values():
+                    if isinstance(pfiles, dict) and pfiles.get("dtype"):
+                        prev_enc = str(pfiles["dtype"])
+                        break
+            prev_compat = (
+                int(prev_grid.get("nx", -1)) == grid_meta.nx
+                and int(prev_grid.get("ny", -1)) == grid_meta.ny
+                and prev_var_ids == expected_var_ids
+                and prev_enc == encoding_label
+            )
+
+        if not prev_compat:
+            shutil.rmtree(out_dir / "cycles" / cycle_id / sp.id, ignore_errors=True)
+            pending_tasks = list(tasks)
         else:
-            batch_size = max(1, min(64, math.ceil(n_tasks / max(1, workers * 2))))
-            batches = [tasks[i:i + batch_size] for i in range(0, n_tasks, batch_size)]
+            prev_ts_by_lead = {int(ts["lead_seconds"]): ts for ts in prev_timesteps if "lead_seconds" in ts}
+            prev_len = len(prev_timesteps)
+            for t in tasks:
+                prev_ts = prev_ts_by_lead.get(int(t["lead_seconds"]))
+                can_reuse = False
+                if (
+                    prev_ts is not None
+                    and prev_ts.get("valid_time") == t["valid_iso"]
+                    and (not t["include_stats"] or bool(prev_ts.get("stats")))
+                ):
+                    files_map = prev_ts.get("files", {})
+                    if all(vc.id in files_map for vc in primary_vars):
+                        rel_paths: List[str] = []
+                        for finfo in files_map.values():
+                            if not isinstance(finfo, dict):
+                                continue
+                            for rk in ("scalar", "u", "v"):
+                                rv = finfo.get(rk)
+                                if rv:
+                                    rel_paths.append(rv)
+                        if rel_paths:
+                            try:
+                                min_bin_ns = min((out_dir / rel).stat().st_mtime_ns for rel in rel_paths if (out_dir / rel).stat().st_size > 0)
+                                bin_count = sum(1 for rel in rel_paths if (out_dir / rel).is_file() and (out_dir / rel).stat().st_size > 0)
+                                if bin_count == len(rel_paths):
+                                    fpath_s = t["file_path"]
+                                    if fpath_s not in src_mtime_cache:
+                                        src_mtime_cache[fpath_s] = Path(fpath_s).stat().st_mtime_ns
+                                    if min_bin_ns >= src_mtime_cache[fpath_s] or n_tasks > prev_len:
+                                        can_reuse = True
+                            except OSError:
+                                can_reuse = False
+                if can_reuse and prev_ts is not None:
+                    reused_results.append(prev_ts)
+                else:
+                    pending_tasks.append(t)
+
+        if reused_results:
+            print(
+                f"[Dusty Earth] [{sp.id}] Reused {len(reused_results)} cached timestep(s); "
+                f"exporting {len(pending_tasks)} new/updated timestep(s)..."
+            )
+        else:
+            print(f"[Dusty Earth] [{sp.id}] Processing {len(pending_tasks)} timestep(s) using {workers} worker(s)...")
+
+        timesteps_results: List[Dict[str, Any]] = list(reused_results)
+        n_pending = len(pending_tasks)
+        if n_pending == 0:
+            pass
+        elif workers <= 1 or n_pending <= 4:
+            timesteps_results.extend(_export_timestep_batch_task(pending_tasks))
+        else:
+            batch_size = max(1, min(64, math.ceil(n_pending / max(1, workers * 2))))
+            batches = [pending_tasks[i:i + batch_size] for i in range(0, n_pending, batch_size)]
             with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
                 future_to_batch = {executor.submit(_export_timestep_batch_task, b): b for b in batches}
                 for fut in concurrent.futures.as_completed(future_to_batch):
@@ -922,6 +1095,7 @@ def export_forecast(
             "short_name": sp.short_name,
             "badge": sp.badge,
             "model_family": sp.model_family,
+            "encoding": encoding_label,
             "resolution_m": round(sp.resolution_m, 2),
             "min_auto_zoom": sp.min_auto_zoom,
             "exit_auto_zoom": sp.exit_auto_zoom,
@@ -929,6 +1103,8 @@ def export_forecast(
             "variables": [v.to_dict() for v in all_model_vars],
             "timesteps": timesteps_results,
         }
+        if sp.extra_meta:
+            model_entry.update(sp.extra_meta)
 
         if sp.static_file is not None and sp.static_file.exists():
             try:

@@ -463,6 +463,122 @@ def test_icon_art_co_registration() -> None:
         print("  -> Test 3 PASSED.")
 
 
+def test_radionuclide_co_registration_and_defaults() -> None:
+    print("[Test 4] Radionuclide derived NetCDF discovery, default_model safety & log_scale...")
+    with tempfile.TemporaryDirectory(prefix="dusty_rn_") as tmpdir:
+        tmp_path = Path(tmpdir)
+        wrf_dir = tmp_path / "wrf_run"
+        wrf_dir.mkdir()
+        rn_root = tmp_path / "rn_root"
+        derived_dir = rn_root / "derived" / "20261114_00"
+        derived_dir.mkdir(parents=True, exist_ok=True)
+        web_out = tmp_path / "portal"
+
+        create_synthetic_wrfout(wrf_dir / "wrfout_d01_2026-11-14_00_00_00", 10000.0, 20, 20, 51.0, 25.5, [0, 60])
+
+        nt, ny, nx = 2, 16, 16
+        t_bytes = np.array([[c.encode("ascii") for c in s] for s in ("2026-11-14_00:00:00", "2026-11-14_01:00:00")], dtype="|S1")
+        lat2d = np.broadcast_to(np.linspace(24.0, 29.0, ny, dtype=np.float32)[:, None], (ny, nx))
+        lon2d = np.broadcast_to(np.linspace(50.0, 53.0, nx, dtype=np.float32)[None, :], (ny, nx))
+        xlat = np.broadcast_to(lat2d[None, :, :], (nt, ny, nx)).copy()
+        xlong = np.broadcast_to(lon2d[None, :, :], (nt, ny, nx)).copy()
+
+        sfc = np.zeros((nt, ny, nx), dtype=np.float32)
+        sfc[1, 8, 8] = 250.0
+        col = np.zeros((nt, ny, nx), dtype=np.float32)
+        col[1, 8, 8] = 5.0e4
+        pct_nan_t0 = np.full((nt, ny, nx), np.nan, dtype=np.float32)
+        pct_nan_t0[1, 8, 8] = 75.0
+
+        for pid, pname in (("bushehr", "Bushehr NPP"), ("barakah", "Barakah NPP")):
+            rn_ds = xr.Dataset(
+                data_vars={
+                    "Times": (("Time", "DateStrLen"), t_bytes),
+                    "XLAT": (("Time", "south_north", "west_east"), xlat),
+                    "XLONG": (("Time", "south_north", "west_east"), xlong),
+                    "U10": (("Time", "south_north", "west_east"), np.full((nt, ny, nx), 4.0, dtype=np.float32), {"units": "m s-1"}),
+                    "V10": (("Time", "south_north", "west_east"), np.full((nt, ny, nx), -2.0, dtype=np.float32), {"units": "m s-1"}),
+                    "T2": (("Time", "south_north", "west_east"), np.full((nt, ny, nx), 298.0, dtype=np.float32), {"units": "K"}),
+                    "rn_i131_sfc": (("Time", "south_north", "west_east"), sfc, {"units": "Bq m-3"}),
+                    "rn_i131_col": (("Time", "south_north", "west_east"), col, {"units": "Bq m-2"}),
+                    "rn_i131_dep": (("Time", "south_north", "west_east"), col * 0.2, {"units": "Bq m-2"}),
+                    "rn_i131_ddep": (("Time", "south_north", "west_east"), col * 0.15, {"units": "Bq m-2"}),
+                    "rn_i131_wdep": (("Time", "south_north", "west_east"), col * 0.05, {"units": "Bq m-2"}),
+                    "rn_i131_upt": (("Time", "south_north", "west_east"), col * 0.1, {"units": "Bq m-2"}),
+                    "rn_i131_gas_pct": (("Time", "south_north", "west_east"), pct_nan_t0, {"units": "%"}),
+                    "rn_i131_coarse_pct": (("Time", "south_north", "west_east"), pct_nan_t0 * 0.2, {"units": "%"}),
+                    "rn_cs137_sfc": (("Time", "south_north", "west_east"), sfc * 0.1, {"units": "Bq m-3"}),
+                    "rn_cs137_col": (("Time", "south_north", "west_east"), col * 0.1, {"units": "Bq m-2"}),
+                    "rn_cs137_dep": (("Time", "south_north", "west_east"), col * 0.02, {"units": "Bq m-2"}),
+                    "rn_cs137_coarse_pct": (("Time", "south_north", "west_east"), pct_nan_t0 * 0.3, {"units": "%"}),
+                },
+                attrs={
+                    "DX": np.float32(10000.0),
+                    "DY": np.float32(10000.0),
+                    "PLANT_ID": pid,
+                    "PLANT_NAME": pname,
+                    "CYCLE_ID": "20261114_00",
+                },
+            )
+            rn_ds.to_netcdf(derived_dir / f"rn_derived_{pid}_20261114_00.nc")
+            (derived_dir / f"qatar_impact_{pid}_20261114_00.json").write_text(
+                json.dumps({"plant_id": pid, "plant_name": pname, "nuclides": {"I131": {"doha_arrival_hour": 1.0, "doha_sfc_peak_bq_m3": 10.0}}}),
+                encoding="utf-8",
+            )
+
+        mpath = export_forecast(
+            input_path=wrf_dir,
+            output_dir=web_out,
+            cycle_str="20261114_00",
+            workers=2,
+            rn_root=rn_root,
+        )
+        manifest = json.loads(mpath.read_text(encoding="utf-8"))
+        cyc = manifest["cycles"][0]
+        assert cyc["default_model"] == "wrf_d01", f"Expected wrf_d01 default_model, got {cyc['default_model']}"
+        assert len(cyc["models"][0]["timesteps"]) == 2
+        assert [m["id"] for m in cyc["models"]] == ["wrf_d01", "rn_barakah", "rn_bushehr"]
+
+        rn_b = cyc["models"][2]
+        assert rn_b["model_family"] == "radionuclide"
+        assert rn_b["min_auto_zoom"] >= 99.0
+        assert rn_b["radionuclide_meta"]["nuclides"]["I131"]["doha_arrival_hour"] == 1.0
+        rn_vars = {v["id"]: v for v in rn_b["variables"]}
+        assert "rn_i131_sfc" in rn_vars and rn_vars["rn_i131_sfc"]["log_scale"] is True
+        assert "rn_i131_gas_pct" in rn_vars, "Expected t=0 NaN percentage variable to be discovered via t>0 probe"
+        assert rn_b["timesteps"][1]["files"]["rn_i131_sfc"]["encoding"] == "float32"
+        print("  -> Test 4 PASSED.")
+
+
+def test_incremental_bin_cache_reuse() -> None:
+    print("[Test 5] Incremental .bin timestep reuse across multi-segment exports...")
+    with tempfile.TemporaryDirectory(prefix="dusty_inc_") as tmpdir:
+        tmp = Path(tmpdir)
+        nc_path = create_synthetic_forecast(tmp / "fc.nc", nt=3, nx=24, ny=20)
+        web_out = tmp / "portal"
+        mpath1 = export_forecast(input_path=nc_path, output_dir=web_out, cycle_str="20261022_00", workers=2)
+        m1 = json.loads(mpath1.read_text(encoding="utf-8"))
+        assert len(m1["cycles"][0]["models"][0]["timesteps"]) == 3
+        rel0 = m1["cycles"][0]["models"][0]["timesteps"][0]["files"]["t2m"]["scalar"]
+        bin0 = web_out / rel0
+        ino_before = bin0.stat().st_ino
+        mtime_before = bin0.stat().st_mtime_ns
+
+        # Re-running with same unchanged source reuses cached .bin without rewriting
+        export_forecast(input_path=nc_path, output_dir=web_out, cycle_str="20261022_00", workers=2)
+        assert bin0.stat().st_ino == ino_before and bin0.stat().st_mtime_ns == mtime_before
+
+        # Extending source to 5 timesteps reuses first 3 steps and appends 2 new steps
+        nc_path2 = create_synthetic_forecast(tmp / "fc.nc", nt=5, nx=24, ny=20)
+        mpath2 = export_forecast(input_path=nc_path2, output_dir=web_out, cycle_str="20261022_00", workers=2)
+        m2 = json.loads(mpath2.read_text(encoding="utf-8"))
+        assert len(m2["cycles"][0]["models"][0]["timesteps"]) == 5
+        assert bin0.stat().st_mtime_ns == mtime_before
+        rel4 = m2["cycles"][0]["models"][0]["timesteps"][4]["files"]["t2m"]["scalar"]
+        assert (web_out / rel4).is_file()
+        print("  -> Test 5 PASSED.")
+
+
 def run_verification_test() -> None:
     print("======================================================================")
     print(" Running Dusty Earth Multi-Model Verification Suite")
@@ -470,6 +586,8 @@ def run_verification_test() -> None:
     test_single_model_and_http_serving()
     test_multidomain_15min_and_config_agnostic_palm()
     test_icon_art_co_registration()
+    test_radionuclide_co_registration_and_defaults()
+    test_incremental_bin_cache_reuse()
     print("======================================================================")
     print(" ALL VERIFICATION CHECKS PASSED (100% OK)")
     print("======================================================================")

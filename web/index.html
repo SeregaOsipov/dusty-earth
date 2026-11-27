@@ -19,6 +19,12 @@
   <div id="map"></div>
   <canvas id="particle-canvas"></canvas>
   <div id="domain-preview-overlay" class="domain-preview-overlay" aria-hidden="true"></div>
+  <div id="tour-stage-banner" class="tour-stage-banner" aria-live="polite" hidden>
+    <span class="tour-stage-dot"></span>
+    <span id="tour-stage-step" class="tour-stage-step"></span>
+    <span id="tour-stage-title" class="tour-stage-title"></span>
+    <span id="tour-stage-badge" class="tour-stage-badge"></span>
+  </div>
 
   <!-- Top-Left Brand & Forecast Cycle Selector -->
   <div class="top-left-dock">
@@ -71,6 +77,16 @@
       <span>Visual &amp; Streamline FX</span>
       <button id="settings-close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.1rem;">&times;</button>
     </div>
+    <div class="setting-row setting-group-box">
+      <button id="btn-setting-tour" class="toggle-btn active" type="button" title="Auto-play and cycle through WRF-Chem, ICON-ART, and PALM-4U models (P)">
+        <span>🎬 Presentation Tour</span>
+        <span class="toggle-state" style="font-size:0.65rem;">ON</span>
+      </button>
+      <button id="btn-setting-rn-tour" class="toggle-btn toggle-btn-rn" type="button" title="Dedicated showcase of hypothetical radionuclide dispersion scenarios" hidden>
+        <span>☢️ Radionuclide Demo</span>
+        <span class="toggle-state" style="font-size:0.65rem;">OFF</span>
+      </button>
+    </div>
     <div class="setting-row">
       <div class="setting-label">
         <span>Particles</span>
@@ -87,10 +103,23 @@
     </div>
     <div class="setting-row" style="border-top:1px solid var(--border-subtle);padding-top:0.6rem;margin-top:0.15rem;">
       <div class="setting-label">
+        <span>Field Opacity</span>
+        <strong id="setting-field-opacity-val">82%</strong>
+      </div>
+      <input type="range" id="setting-field-opacity" class="setting-slider" min="0.35" max="1.00" step="0.05" value="0.82" />
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">
         <span>3D Building Opacity</span>
         <strong id="setting-bldg-opacity-val">100%</strong>
       </div>
       <input type="range" id="setting-bldg-opacity" class="setting-slider" min="0.30" max="1.00" step="0.05" value="1.00" />
+    </div>
+    <div class="setting-row" style="border-top:1px solid var(--border-subtle);padding-top:0.6rem;margin-top:0.15rem;">
+      <button id="btn-toggle-labels" class="toggle-btn active" type="button" title="Toggle Map Place Labels (M)">
+        <span>🗺️ Map Labels</span>
+        <span class="toggle-state" style="font-size:0.65rem;">ON</span>
+      </button>
     </div>
   </div>
 
@@ -166,7 +195,11 @@
       <div class="model-selector-wrap">
         <div id="domain-preview-card" class="domain-preview-card" hidden aria-live="polite"></div>
         <div id="model-selector-bar" class="model-selector-bar" role="group" aria-label="Model Resolution Selector">
-          <button id="btn-model-auto" class="model-auto-btn active" type="button" title="Automatically switch forecast model as you zoom into Qatar / Doha">
+          <button id="btn-model-tour" class="model-tour-btn active" type="button" title="Presentation Tour (P) — auto-play and smoothly cycle across models">
+            <span class="tour-live-dot"></span>
+            <span>🎬 Tour</span>
+          </button>
+          <button id="btn-model-auto" class="model-auto-btn" type="button" title="Automatically switch forecast model as you zoom into Qatar / Doha">
             <span class="auto-spark">&#x2728;</span>
             <span>Auto</span>
           </button>
@@ -229,8 +262,8 @@
           <button id="btn-loop-mode" class="mode-btn" title="Toggle Loop Mode (L)">&#x1F501; Repeat</button>
           <div class="fps-control" id="speed-control-wrap" title="Forecast playback speed (simulated hours per real second)">
             <span>Speed:</span>
-            <strong id="fps-value" style="color:var(--accent-emerald);">3h/s</strong>
-            <input type="range" id="fps-slider" class="fps-slider" min="0.25" max="8" value="3" step="0.25" aria-label="Forecast Animation Speed (hours per second)" />
+            <strong id="fps-value" style="color:var(--accent-emerald);">6h/s</strong>
+            <input type="range" id="fps-slider" class="fps-slider" min="0.25" max="12" value="6" step="0.25" aria-label="Forecast Animation Speed (hours per second)" />
           </div>
         </div>
       </div>

@@ -551,6 +551,7 @@ select.cycle-dropdown:focus {
   border-left: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.model-tour-btn,
 .model-auto-btn,
 .model-pill {
   background: rgba(15, 23, 42, 0.72);
@@ -576,19 +577,50 @@ select.cycle-dropdown:focus {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.model-tour-btn,
 .model-auto-btn {
   padding: 0.36rem 0.62rem;
   font-size: 0.72rem;
   border-radius: 8px;
 }
 
+.tour-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.55);
+  flex-shrink: 0;
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.model-tour-btn.active .tour-live-dot {
+  background: #38bdf8;
+  box-shadow: 0 0 8px #38bdf8;
+  animation: tourPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes tourPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.86); }
+}
+
+.model-tour-btn:hover,
+.model-tour-btn:focus-visible,
 .model-auto-btn:hover,
+.model-auto-btn:focus-visible,
 .model-pill:hover,
 .model-pill:focus-visible {
   background: var(--bg-panel-hover);
   color: var(--text-primary);
   border-color: rgba(255, 255, 255, 0.25);
   outline: none;
+}
+
+.model-tour-btn.active {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(99, 102, 241, 0.20));
+  border-color: rgba(56, 189, 248, 0.78);
+  color: #e0f2fe;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.26);
 }
 
 .model-auto-btn.active {
@@ -603,6 +635,26 @@ select.cycle-dropdown:focus {
   border-color: var(--family-color, var(--accent-blue));
   color: var(--text-primary);
   box-shadow: 0 0 10px color-mix(in srgb, var(--family-color, #38bdf8) 32%, transparent);
+}
+
+.model-rn-tour-btn {
+  background: rgba(244, 63, 94, 0.10);
+  border-color: rgba(244, 63, 94, 0.28);
+  color: #fda4af;
+}
+
+.model-rn-tour-btn:hover,
+.model-rn-tour-btn:focus-visible {
+  background: rgba(244, 63, 94, 0.18);
+  border-color: rgba(244, 63, 94, 0.55);
+  color: #ffe4e6;
+}
+
+.model-rn-tour-btn.active {
+  background: rgba(244, 63, 94, 0.24);
+  border-color: #fb7185;
+  color: #ffe4e6;
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.35);
 }
 
 .model-pill.out-of-range {
@@ -735,6 +787,70 @@ select.cycle-dropdown:focus {
 
 .domain-map-tag.centered {
   transform: translate(-50%, -100%);
+}
+
+/* Presentation Tour Stage Transition Banner */
+.tour-stage-banner {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  --stage-color: #38bdf8;
+  transform: translateX(-50%) translateY(0);
+  z-index: 22;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  background: rgba(7, 11, 20, 0.88);
+  border: 1px solid color-mix(in srgb, var(--stage-color, #38bdf8) 62%, rgba(255, 255, 255, 0.16));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.65);
+  opacity: 1;
+  transition: opacity 0.32s ease, transform 0.32s ease;
+  white-space: nowrap;
+}
+
+.tour-stage-banner[hidden] {
+  display: none;
+}
+
+.tour-stage-banner.fade-out {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-6px);
+}
+
+.tour-stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--stage-color, #38bdf8);
+  box-shadow: 0 0 8px var(--stage-color, #38bdf8);
+  flex-shrink: 0;
+}
+
+.tour-stage-step {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.tour-stage-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tour-stage-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.08rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--stage-color, #38bdf8);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1101,6 +1217,18 @@ select.cycle-dropdown:focus {
   gap: 0.25rem;
 }
 
+.setting-group-box {
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 0.35rem;
+}
+
+.toggle-btn-rn.active {
+  color: #fda4af;
+  border-color: rgba(244, 63, 94, 0.55);
+}
+
 .setting-label {
   display: flex;
   justify-content: space-between;
@@ -1371,6 +1499,11 @@ select.cycle-dropdown:focus {
 /* Responsive Adjustments                                                     */
 /* -------------------------------------------------------------------------- */
 @media (max-width: 768px) {
+  .tour-stage-banner {
+    top: 4.4rem;
+    max-width: calc(100vw - 2rem);
+    overflow: hidden;
+  }
   .layer-dock {
     max-width: 140px;
   }

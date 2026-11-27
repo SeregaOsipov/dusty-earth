@@ -16,14 +16,21 @@ export class TimelineController {
     this.currentIndex = 0;
     this.playheadMs = 0;
     this.isPlaying = false;
-    this.simHoursPerSec = 3.0; // Constant physical speed across 1h / 15m / 10m / 1m cadences
-    this.fps = 3.0;
+    const domSpeed = Number(this.dom && this.dom.fpsSlider && this.dom.fpsSlider.value);
+    this.simHoursPerSec =
+      Number.isFinite(domSpeed) && domSpeed > 0
+        ? Math.max(0.25, Math.min(12.0, domSpeed))
+        : 6.0; // Constant physical speed across 1h / 15m / 10m / 1m cadences
+    this.fps = this.simHoursPerSec;
     this.loopMode = "repeat"; // "repeat" | "bounce"
     this.bounceDir = 1;
+    this.tourModeActive = false;
 
     this.timerId = null;
     this.lastTickTime = 0;
     this.onFrameChangeCallbacks = [];
+    this.onSequenceEndCallbacks = [];
+    this.onUserTransportCallbacks = [];
 
     this._bindEvents();
   }
@@ -108,18 +115,20 @@ export class TimelineController {
   }
 
   _updateSpeedLabel() {
-    const cleanNum = Number(this.simHoursPerSec.toFixed(2));
-    const valStr = `${cleanNum}h/s`;
+    const effSimRate = this.getEffectiveSimSecondsPerRealSec();
+    const valStr =
+      effSimRate < 900
+        ? `${Number((effSimRate / 60).toFixed(1))}m/s`
+        : `${Number((effSimRate / 3600).toFixed(2))}h/s`;
     if (this.dom.fpsValue) {
       this.dom.fpsValue.textContent = valStr;
     }
     if (this.dom.fpsSlider) {
       this.dom.fpsSlider.value = String(this.simHoursPerSec);
       const dtSec = Math.max(1, this.getStepIntervalSeconds());
-      const effSimRate = this.getEffectiveSimSecondsPerRealSec();
       const effFps = Math.min(60, effSimRate / dtSec);
       const stepLabel = this._formatIntervalLabel(dtSec);
-      const tip = `Playback speed: ${this.simHoursPerSec} forecast h/s (~${effFps.toFixed(1)} fps @ ${stepLabel} output)`;
+      const tip = `Playback speed: ${valStr} (~${effFps.toFixed(1)} fps @ ${stepLabel} output)`;
       this.dom.fpsSlider.title = tip;
       if (this.dom.fpsSlider.parentElement) {
         this.dom.fpsSlider.parentElement.title = tip;
@@ -139,6 +148,26 @@ export class TimelineController {
       }
     }
     return bestIdx;
+  }
+
+  _findStepIndexForPlayhead(targetMs, dir = 1) {
+    const n = this.timestepEpochMs.length;
+    if (n === 0) return 0;
+    if (dir < 0) {
+      for (let i = 0; i < n; i++) {
+        if (this.timestepEpochMs[i] >= targetMs - 1) return i;
+      }
+      return n - 1;
+    }
+    let idx = 0;
+    for (let i = 0; i < n; i++) {
+      if (this.timestepEpochMs[i] <= targetMs + 1) {
+        idx = i;
+      } else {
+        break;
+      }
+    }
+    return idx;
   }
 
   findNearestIndexForUtc(targetIso) {
@@ -178,6 +207,32 @@ export class TimelineController {
 
   onFrameChange(callback) {
     this.onFrameChangeCallbacks.push(callback);
+  }
+
+  onSequenceEnd(callback) {
+    this.onSequenceEndCallbacks.push(callback);
+  }
+
+  onUserTransport(callback) {
+    this.onUserTransportCallbacks.push(callback);
+  }
+
+  _notifyUserTransport(action) {
+    for (const cb of this.onUserTransportCallbacks) {
+      cb(action);
+    }
+  }
+
+  setTourMode(active) {
+    this.tourModeActive = Boolean(active);
+    this.bounceDir = 1;
+    if (this.dom.loopBtn) {
+      this.dom.loopBtn.hidden = this.tourModeActive;
+      if (!this.tourModeActive) {
+        this.dom.loopBtn.innerHTML = this.loopMode === "bounce" ? "&#x2194;&#xFE0F; Bounce" : "&#x1F501; Repeat";
+      }
+    }
+    this._updateSpeedLabel();
   }
 
   _notifyChange() {
@@ -242,6 +297,10 @@ export class TimelineController {
 
   play() {
     if (this.timesteps.length <= 1) return;
+    if (this.timerId !== null) {
+      cancelAnimationFrame(this.timerId);
+      this.timerId = null;
+    }
     this.isPlaying = true;
     this.dom.playBtn.classList.add("playing");
     this.dom.playIcon.innerHTML = "&#x23F8;";
@@ -304,28 +363,46 @@ export class TimelineController {
       const tLast = this.timestepEpochMs[this.timestepEpochMs.length - 1];
       if (tLast > tFirst) {
         const simSecPerReal = this.getEffectiveSimSecondsPerRealSec();
-        this.playheadMs += dtRealSec * simSecPerReal * 1000 * this.bounceDir;
-
-        if (this.loopMode === "bounce") {
-          if (this.playheadMs >= tLast) {
-            this.playheadMs = Math.max(tFirst, tLast - (this.playheadMs - tLast));
-            this.bounceDir = -1;
-          } else if (this.playheadMs <= tFirst) {
-            this.playheadMs = Math.min(tLast, tFirst + (tFirst - this.playheadMs));
-            this.bounceDir = 1;
+        if (this.tourModeActive) {
+          this.playheadMs += dtRealSec * simSecPerReal * 1000;
+          const dtMs = Math.max(1, this.getStepIntervalSeconds()) * 1000;
+          if (this.playheadMs >= tLast + dtMs) {
+            this.currentIndex = this.timesteps.length - 1;
+            this.playheadMs = tLast;
+            this.updateUI();
+            this.pause();
+            for (const cb of this.onSequenceEndCallbacks) {
+              cb();
+            }
+            return;
+          }
+          if (this.playheadMs < tFirst) {
+            this.playheadMs = tFirst;
           }
         } else {
-          const dtMs = Math.max(1, this.getStepIntervalSeconds()) * 1000;
-          const cycleSpan = (tLast - tFirst) + dtMs;
-          if (this.playheadMs >= tLast + dtMs) {
-            this.playheadMs = tFirst + ((this.playheadMs - tFirst) % cycleSpan);
-          } else if (this.playheadMs < tFirst) {
-            this.playheadMs = tFirst;
+          this.playheadMs += dtRealSec * simSecPerReal * 1000 * this.bounceDir;
+
+          if (this.loopMode === "bounce") {
+            if (this.playheadMs >= tLast) {
+              this.playheadMs = Math.max(tFirst, tLast - (this.playheadMs - tLast));
+              this.bounceDir = -1;
+            } else if (this.playheadMs <= tFirst) {
+              this.playheadMs = Math.min(tLast, tFirst + (tFirst - this.playheadMs));
+              this.bounceDir = 1;
+            }
+          } else {
+            const dtMs = Math.max(1, this.getStepIntervalSeconds()) * 1000;
+            const cycleSpan = (tLast - tFirst) + dtMs;
+            if (this.playheadMs >= tLast + dtMs) {
+              this.playheadMs = tFirst + ((this.playheadMs - tFirst) % cycleSpan);
+            } else if (this.playheadMs < tFirst) {
+              this.playheadMs = tFirst;
+            }
           }
         }
 
         const clampedMs = Math.min(tLast, Math.max(tFirst, this.playheadMs));
-        const targetIdx = this._findNearestIndexMs(clampedMs);
+        const targetIdx = this._findStepIndexForPlayhead(clampedMs, this.tourModeActive ? 1 : this.bounceDir);
         if (targetIdx !== this.currentIndex) {
           this.goTo(targetIdx, true, true);
         }
@@ -538,6 +615,7 @@ export class TimelineController {
       span.innerHTML = `<span class="tick-date">${dateLabel}</span><span class="tick-lead">${leadLabel}</span>`;
       span.title = `Jump to ${dateLabel} (${leadLabel})`;
       span.addEventListener("click", () => {
+        this._notifyUserTransport("tick");
         this.pause();
         this.goTo(idx);
       });
@@ -546,30 +624,41 @@ export class TimelineController {
   }
 
   _bindEvents() {
-    this.dom.playBtn.addEventListener("click", () => this.togglePlay());
+    this.dom.playBtn.addEventListener("click", () => {
+      this._notifyUserTransport("play-btn");
+      this.togglePlay();
+    });
     this.dom.prevBtn.addEventListener("click", () => {
+      this._notifyUserTransport("prev");
       this.pause();
       this.step(-1);
     });
     this.dom.nextBtn.addEventListener("click", () => {
+      this._notifyUserTransport("next");
       this.pause();
       this.step(1);
     });
     this.dom.firstBtn.addEventListener("click", () => {
+      this._notifyUserTransport("first");
       this.pause();
       this.first();
     });
     this.dom.lastBtn.addEventListener("click", () => {
+      this._notifyUserTransport("last");
       this.pause();
       this.last();
     });
 
     this.dom.slider.addEventListener("input", (e) => {
+      this._notifyUserTransport("scrub");
       this.pause();
       this.goTo(Number(e.target.value));
     });
 
-    this.dom.loopBtn.addEventListener("click", () => this.toggleLoopMode());
+    this.dom.loopBtn.addEventListener("click", () => {
+      this._notifyUserTransport("loop");
+      this.toggleLoopMode();
+    });
 
     this.dom.fpsSlider.addEventListener("input", (e) => {
       this.setSpeedHoursPerSec(Number(e.target.value));

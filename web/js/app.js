@@ -17,14 +17,23 @@ class DustyApp {
     this.activeCycle = null;
     this.activeModel = null;
     this.activeVariable = null;
-    this.autoModelMode = true;
+    this.autoModelMode = false;
+    this.tourScope = "standard"; // "standard" | "radionuclide" | null
 
     this._autoEvalTimer = null;
     this._isProgrammaticMove = false;
     this._progMoveTimer = null;
+    this._tourPlayTimer = null;
+    this._tourBannerTimer = null;
+    this._tourBannerHideTimer = null;
+    this._preloadedNextTourKey = null;
+    this._preferredAtmoVarId = null;
+    this._preferredRnVarId = "rn_i131_sfc";
     this._autoTilted = false;
     this._lastBoundsSig = null;
     this._timestepTicket = 0;
+    this._renderInFlight = false;
+    this._queuedPlayTimestep = null;
     this._lastWindUpdateMs = 0;
     this._previewState = null;
 
@@ -38,12 +47,18 @@ class DustyApp {
     this.showWindOverlay = true;
     this.showBuildings3D = true;
     this.showCanopy3D = true;
+    this.showMapLabels = true;
 
     this.dom = {
       cycleSelect: document.getElementById("cycle-select"),
       modelSelectorBar: document.getElementById("model-selector-bar"),
+      modelTourBtn: document.getElementById("btn-model-tour"),
       modelAutoBtn: document.getElementById("btn-model-auto"),
       modelPillsList: document.getElementById("model-pills-list"),
+      tourBanner: document.getElementById("tour-stage-banner"),
+      tourBannerStep: document.getElementById("tour-stage-step"),
+      tourBannerTitle: document.getElementById("tour-stage-title"),
+      tourBannerBadge: document.getElementById("tour-stage-badge"),
       domainPreviewCard: document.getElementById("domain-preview-card"),
       domainPreviewOverlay: document.getElementById("domain-preview-overlay"),
       layerDock: document.getElementById("layer-dock-list"),
@@ -76,12 +91,17 @@ class DustyApp {
       settingsBtn: document.getElementById("btn-settings"),
       settingsPanel: document.getElementById("settings-panel"),
       settingsClose: document.getElementById("settings-close"),
+      settingTourBtn: document.getElementById("btn-setting-tour"),
+      settingRnTourBtn: document.getElementById("btn-setting-rn-tour"),
       particleCountSlider: document.getElementById("setting-particle-count"),
       particleCountVal: document.getElementById("setting-particle-count-val"),
       particleSpeedSlider: document.getElementById("setting-particle-speed"),
       particleSpeedVal: document.getElementById("setting-particle-speed-val"),
+      fieldOpacitySlider: document.getElementById("setting-field-opacity"),
+      fieldOpacityVal: document.getElementById("setting-field-opacity-val"),
       bldgOpacitySlider: document.getElementById("setting-bldg-opacity"),
       bldgOpacityVal: document.getElementById("setting-bldg-opacity-val"),
+      labelsToggleBtn: document.getElementById("btn-toggle-labels"),
       // Model Info & Scientific Attribution Modal
       modelInfoBtn: document.getElementById("btn-model-info"),
       attrLeadTrigger: document.getElementById("attr-lead-trigger"),
@@ -132,6 +152,22 @@ class DustyApp {
     });
 
     if (this.mapEngine.map) {
+      ["dragstart", "zoomstart", "rotatestart", "pitchstart", "boxzoomstart"].forEach((evtName) => {
+        this.mapEngine.map.on(evtName, (e) => {
+          if (e && e.originalEvent && this.tourScope) {
+            this.disableTourMode(`map-${evtName}`);
+          }
+        });
+      });
+      const mapContainer = this.mapEngine.map.getContainer ? this.mapEngine.map.getContainer() : null;
+      if (mapContainer) {
+        mapContainer.addEventListener("pointerdown", (e) => {
+          if (e.target && e.target.closest && e.target.closest(".maplibregl-ctrl-group") && this.tourScope) {
+            this.disableTourMode("map-nav-ctrl");
+          }
+        });
+      }
+
       this.mapEngine.map.on("moveend", () => {
         if (!this._isProgrammaticMove) {
           this._scheduleAutoModelEval();
@@ -152,8 +188,22 @@ class DustyApp {
     this.timeline = new TimelineController(this.dom);
     this.timeline.onFrameChange((timestep) => {
       this.loadTimestep(timestep);
-      if (this.autoModelMode) {
+      if (
+        !this.tourScope &&
+        this.autoModelMode &&
+        this.activeModel &&
+        timestep &&
+        !this._isModelTemporallyValid(this.activeModel, timestep.valid_time)
+      ) {
         this._scheduleAutoModelEval(40);
+      }
+    });
+    this.timeline.onSequenceEnd(() => {
+      this._advanceTourToNextModel();
+    });
+    this.timeline.onUserTransport((action) => {
+      if (this.tourScope) {
+        this.disableTourMode(`timeline-${action}`);
       }
     });
 
@@ -228,6 +278,18 @@ class DustyApp {
       const urlCycleId = params.get("cycle");
       const urlModelId = params.get("model");
       const urlVarId = params.get("var");
+      const urlTourParam = (params.get("tour") || "").trim().toLowerCase();
+
+      if (urlVarId) {
+        this._preferredAtmoVarId = urlVarId;
+      }
+
+      let initialTourScope = "standard";
+      if (urlModelId || ["0", "false", "off", "none"].includes(urlTourParam)) {
+        initialTourScope = null;
+      } else if (["rn", "radionuclide"].includes(urlTourParam)) {
+        initialTourScope = "radionuclide";
+      }
 
       this._populateCycles(cycles);
       const startCycleId =
@@ -237,6 +299,7 @@ class DustyApp {
       this.selectCycle(startCycleId, {
         preferredModelId: urlModelId,
         preferredVarId: urlVarId,
+        tourScope: initialTourScope,
       });
     } catch (err) {
       console.error("[Dusty Earth] Failed to load manifest.json:", err);
@@ -274,9 +337,10 @@ class DustyApp {
 
   _fitBoundsSafe(gridMeta, extra = {}) {
     if (!gridMeta || !this.mapEngine.map) return;
+    const dur = typeof extra.duration === "number" ? extra.duration : 1000;
     this._runProgrammaticCamera(
       () => this.mapEngine.fitBounds(gridMeta.lon_min, gridMeta.lat_min, gridMeta.lon_max, gridMeta.lat_max, 45, extra),
-      1250
+      dur + 500
     );
   }
 
@@ -289,9 +353,16 @@ class DustyApp {
     }
   }
 
-  selectCycle(cycleId, { preferredModelId = null, preferredVarId = null } = {}) {
+  selectCycle(cycleId, { preferredModelId = null, preferredVarId = null, tourScope = undefined } = {}) {
     const cycle = this.manifest.cycles.find((c) => c.id === cycleId) || this.manifest.cycles[0];
     if (!cycle) return;
+
+    if (this._tourPlayTimer) {
+      clearTimeout(this._tourPlayTimer);
+      this._tourPlayTimer = null;
+    }
+    this._preloadedNextTourKey = null;
+    this._hideTourStageBanner();
 
     cycle.models = this._normalizeCycleModels(cycle);
     this.activeCycle = cycle;
@@ -300,10 +371,199 @@ class DustyApp {
 
     this._populateModels(cycle.models);
 
+    if (this.dom.settingRnTourBtn) {
+      this.dom.settingRnTourBtn.hidden = this._getTourPlaylist("radionuclide").length === 0;
+    }
+
     const explicitModel = preferredModelId ? cycle.models.find((m) => m.id === preferredModelId) : null;
-    this.autoModelMode = !explicitModel;
-    const startModel = explicitModel || cycle.models.find((m) => m.id === cycle.default_model) || cycle.models[0];
-    this.selectModel(startModel.id, { fromAuto: !explicitModel, fitView: true, preferredVarId });
+    let requestedScope = tourScope !== undefined ? tourScope : this.tourScope;
+
+    if (explicitModel) {
+      this.tourScope = null;
+      this.autoModelMode = false;
+      if (this.timeline) this.timeline.setTourMode(false);
+      this.selectModel(explicitModel.id, { fromAuto: false, fitView: true, preferredVarId });
+      return;
+    }
+
+    if (requestedScope) {
+      let playlist = this._getTourPlaylist(requestedScope);
+      if (playlist.length === 0 && requestedScope === "radionuclide") {
+        requestedScope = "standard";
+        playlist = this._getTourPlaylist("standard");
+      }
+      if (playlist.length > 0) {
+        this.enableTourMode(requestedScope, { restartFromFirst: true, preferredVarId });
+        return;
+      }
+    }
+
+    this.tourScope = null;
+    this.autoModelMode = true;
+    if (this.timeline) this.timeline.setTourMode(false);
+    const startModel = cycle.models.find((m) => m.id === cycle.default_model) || cycle.models[0];
+    this.selectModel(startModel.id, { fromAuto: true, fitView: true, preferredVarId });
+  }
+
+  _getTourPlaylist(scope = "standard") {
+    if (!this.activeCycle || !Array.isArray(this.activeCycle.models)) return [];
+    const groups = this._groupModelsByFamily(this.activeCycle.models);
+    const ordered = [];
+    for (const grp of groups) {
+      const isRn = grp.meta.key === "radionuclide";
+      if (scope === "radionuclide" && !isRn) continue;
+      if (scope !== "radionuclide" && isRn) continue;
+      ordered.push(...grp.models);
+    }
+    const playable = ordered.filter((m) => Array.isArray(m.timesteps) && m.timesteps.length >= 2);
+    return playable.length > 0
+      ? playable
+      : ordered.filter((m) => Array.isArray(m.timesteps) && m.timesteps.length > 0);
+  }
+
+  enableTourMode(scope = "standard", { restartFromFirst = false, preferredVarId = null } = {}) {
+    const playlist = this._getTourPlaylist(scope);
+    if (playlist.length === 0) return false;
+
+    if (this._tourPlayTimer) {
+      clearTimeout(this._tourPlayTimer);
+      this._tourPlayTimer = null;
+    }
+    this._preloadedNextTourKey = null;
+    this.tourScope = scope;
+    this.autoModelMode = false;
+    if (this.timeline) {
+      this.timeline.pause();
+      this.timeline.setTourMode(true);
+    }
+
+    const currIdx = this.activeModel ? playlist.findIndex((m) => m.id === this.activeModel.id) : -1;
+    const targetIdx = !restartFromFirst && currIdx >= 0 ? currIdx : 0;
+    const targetModel = playlist[targetIdx];
+
+    const atEnd =
+      this.timeline &&
+      this.timeline.timesteps.length > 1 &&
+      this.timeline.currentIndex >= this.timeline.timesteps.length - 1;
+    const resetStart = restartFromFirst || currIdx < 0 || atEnd;
+
+    this.selectModel(targetModel.id, {
+      fromTour: true,
+      fitView: true,
+      fitDurationMs: 1650,
+      resetTimelineToStart: resetStart,
+      preferredVarId,
+    });
+
+    this._showTourStageBanner(targetModel, targetIdx + 1, playlist.length, scope);
+
+    const expectedId = targetModel.id;
+    this._tourPlayTimer = setTimeout(() => {
+      this._tourPlayTimer = null;
+      if (this.tourScope === scope && this.activeModel && this.activeModel.id === expectedId && this.timeline) {
+        this.timeline.play();
+      }
+    }, 1050);
+    return true;
+  }
+
+  disableTourMode(reason = "manual") {
+    if (this._tourPlayTimer) {
+      clearTimeout(this._tourPlayTimer);
+      this._tourPlayTimer = null;
+    }
+    this._preloadedNextTourKey = null;
+    const wasActive = Boolean(this.tourScope);
+    this.tourScope = null;
+    if (this.timeline) {
+      this.timeline.setTourMode(false);
+    }
+    this._hideTourStageBanner();
+    if (wasActive) {
+      console.log(`[Dusty Earth] Presentation tour paused (${reason}).`);
+      this._syncModelSelectorUI();
+    }
+  }
+
+  _advanceTourToNextModel() {
+    const scope = this.tourScope;
+    if (!scope) return;
+    const playlist = this._getTourPlaylist(scope);
+    if (playlist.length === 0) {
+      this.disableTourMode("empty-playlist");
+      return;
+    }
+    const currIdx = this.activeModel ? playlist.findIndex((m) => m.id === this.activeModel.id) : -1;
+    const nextIdx = currIdx >= 0 ? (currIdx + 1) % playlist.length : 0;
+    const nextModel = playlist[nextIdx];
+
+    this._preloadedNextTourKey = null;
+    this.selectModel(nextModel.id, {
+      fromTour: true,
+      fitView: true,
+      fitDurationMs: 1950,
+      resetTimelineToStart: true,
+    });
+
+    this._showTourStageBanner(nextModel, nextIdx + 1, playlist.length, scope);
+
+    if (this._tourPlayTimer) {
+      clearTimeout(this._tourPlayTimer);
+    }
+    const expectedId = nextModel.id;
+    this._tourPlayTimer = setTimeout(() => {
+      this._tourPlayTimer = null;
+      if (this.tourScope === scope && this.activeModel && this.activeModel.id === expectedId && this.timeline) {
+        this.timeline.play();
+      }
+    }, 1250);
+  }
+
+  _showTourStageBanner(model, indexOneBased, totalCount, scope = "standard") {
+    const banner = this.dom.tourBanner;
+    if (!banner || !model) return;
+    if (this._tourBannerTimer) clearTimeout(this._tourBannerTimer);
+    if (this._tourBannerHideTimer) clearTimeout(this._tourBannerHideTimer);
+
+    const fam = this._getModelFamilyMeta(model);
+    banner.style.setProperty("--stage-color", fam.color);
+    if (this.dom.tourBannerStep) {
+      const icon = scope === "radionuclide" ? "☢️" : "🎬";
+      this.dom.tourBannerStep.textContent = `${icon} ${indexOneBased}/${totalCount}`;
+    }
+    if (this.dom.tourBannerTitle) {
+      this.dom.tourBannerTitle.textContent = model.name || fam.label;
+    }
+    if (this.dom.tourBannerBadge) {
+      this.dom.tourBannerBadge.textContent = model.badge || this._formatGridSpacing(model.resolution_m);
+    }
+
+    banner.classList.remove("fade-out");
+    banner.hidden = false;
+
+    this._tourBannerTimer = setTimeout(() => {
+      this._tourBannerTimer = null;
+      banner.classList.add("fade-out");
+      this._tourBannerHideTimer = setTimeout(() => {
+        this._tourBannerHideTimer = null;
+        banner.hidden = true;
+      }, 340);
+    }, 2600);
+  }
+
+  _hideTourStageBanner() {
+    if (this._tourBannerTimer) {
+      clearTimeout(this._tourBannerTimer);
+      this._tourBannerTimer = null;
+    }
+    if (this._tourBannerHideTimer) {
+      clearTimeout(this._tourBannerHideTimer);
+      this._tourBannerHideTimer = null;
+    }
+    if (this.dom.tourBanner) {
+      this.dom.tourBanner.classList.remove("fade-out");
+      this.dom.tourBanner.hidden = true;
+    }
   }
 
   _escapeHtml(str) {
@@ -320,7 +580,8 @@ class DustyApp {
     const idName = `${(model && model.id) || ""} ${(model && model.name) || ""}`.toLowerCase();
     let fam = rawFam;
     if (!fam || fam === "generic") {
-      if (idName.includes("wrf")) fam = "wrf";
+      if (idName.includes("rn_") || idName.includes("radionuclide")) fam = "radionuclide";
+      else if (idName.includes("wrf")) fam = "wrf";
       else if (idName.includes("icon")) fam = "icon";
       else if (idName.includes("palm")) fam = "palm";
       else if (idName.includes("cams")) fam = "cams";
@@ -353,6 +614,13 @@ class DustyApp {
         color: "#a78bfa",
         glow: "rgba(167, 139, 250, 0.38)",
         fill: "rgba(167, 139, 250, 0.09)",
+      },
+      radionuclide: {
+        key: "radionuclide",
+        label: "☢ Radionuclide",
+        color: "#f43f5e",
+        glow: "rgba(244, 63, 94, 0.42)",
+        fill: "rgba(244, 63, 94, 0.11)",
       },
     };
     return (
@@ -400,11 +668,15 @@ class DustyApp {
       });
     });
 
-    groups.sort(
-      (a, b) =>
+    groups.sort((a, b) => {
+      const aRn = a.meta.key === "radionuclide" ? 1 : 0;
+      const bRn = b.meta.key === "radionuclide" ? 1 : 0;
+      if (aRn !== bRn) return aRn - bRn;
+      return (
         (Number(b.models[0] && b.models[0].resolution_m) || 0) -
         (Number(a.models[0] && a.models[0].resolution_m) || 0)
-    );
+      );
+    });
     return groups;
   }
 
@@ -436,6 +708,7 @@ class DustyApp {
       famBtn.addEventListener("mouseenter", showFamPreview);
       famBtn.addEventListener("focus", showFamPreview);
       famBtn.addEventListener("click", () => {
+        this.disableTourMode("family-btn");
         this.autoModelMode = false;
         const currIdx = this.activeModel ? group.models.findIndex((m) => m.id === this.activeModel.id) : -1;
         let targetModel;
@@ -453,6 +726,32 @@ class DustyApp {
 
       const resList = document.createElement("div");
       resList.className = "model-res-list";
+
+      if (group.meta.key === "radionuclide" && group.models.length > 0) {
+        const rnTourBtn = document.createElement("button");
+        rnTourBtn.type = "button";
+        rnTourBtn.className = "model-pill model-rn-tour-btn";
+        rnTourBtn.dataset.family = "radionuclide";
+        rnTourBtn.textContent = "▶ Demo";
+        rnTourBtn.title = "Cycle through radionuclide dispersion scenarios separately from the main tour";
+        const showRnTourPreview = () => {
+          this._showDomainPreview({
+            mode: "rn-tour",
+            familyMeta: group.meta,
+            models: this._getTourPlaylist("radionuclide"),
+          });
+        };
+        rnTourBtn.addEventListener("mouseenter", showRnTourPreview);
+        rnTourBtn.addEventListener("focus", showRnTourPreview);
+        rnTourBtn.addEventListener("click", () => {
+          if (this.tourScope === "radionuclide") {
+            this.disableTourMode("rn-demo-btn");
+          } else {
+            this.enableTourMode("radionuclide", { restartFromFirst: false });
+          }
+        });
+        resList.appendChild(rnTourBtn);
+      }
 
       group.models.forEach((m) => {
         const chipLabel = group.chipLabels.get(m.id) || m.badge || m.short_name || m.id;
@@ -474,6 +773,7 @@ class DustyApp {
         btn.addEventListener("mouseenter", showModelPreview);
         btn.addEventListener("focus", showModelPreview);
         btn.addEventListener("click", () => {
+          this.disableTourMode("model-pill");
           this.autoModelMode = false;
           this._syncModelSelectorUI();
           const needsFit =
@@ -492,8 +792,17 @@ class DustyApp {
   }
 
   _syncModelSelectorUI() {
+    if (this.dom.modelTourBtn) {
+      this.dom.modelTourBtn.classList.toggle("active", this.tourScope === "standard");
+    }
     if (this.dom.modelAutoBtn) {
-      this.dom.modelAutoBtn.classList.toggle("active", this.autoModelMode);
+      this.dom.modelAutoBtn.classList.toggle("active", !this.tourScope && this.autoModelMode);
+    }
+    if (this.dom.settingTourBtn) {
+      this._updateToggleButtonUI(this.dom.settingTourBtn, this.tourScope === "standard");
+    }
+    if (this.dom.settingRnTourBtn) {
+      this._updateToggleButtonUI(this.dom.settingRnTourBtn, this.tourScope === "radionuclide");
     }
     if (!this.dom.modelPillsList || !this.activeCycle) return;
 
@@ -505,7 +814,11 @@ class DustyApp {
       grp.classList.toggle("active-family", Boolean(activeFamily && grp.dataset.family === activeFamily));
     });
 
-    this.dom.modelPillsList.querySelectorAll(".model-pill").forEach((btn) => {
+    this.dom.modelPillsList.querySelectorAll(".model-rn-tour-btn").forEach((btn) => {
+      btn.classList.toggle("active", this.tourScope === "radionuclide");
+    });
+
+    this.dom.modelPillsList.querySelectorAll(".model-res-btn").forEach((btn) => {
       const mid = btn.dataset.modelId;
       const m = this.activeCycle.models.find((item) => item.id === mid);
       const isActive = this.activeModel && this.activeModel.id === mid;
@@ -525,7 +838,52 @@ class DustyApp {
     }
   }
 
-  selectModel(modelId, { fromAuto = false, fitView = false, preferredVarId = null } = {}) {
+  _resolvePreferredVariable(vars, preferredVarId, isRnModel) {
+    if (!Array.isArray(vars) || vars.length === 0) return null;
+    const desired = preferredVarId || (isRnModel ? this._preferredRnVarId : this._preferredAtmoVarId);
+    if (desired) {
+      const direct = vars.find((v) => v.id === desired && (!isRnModel || v.category === "radionuclide"));
+      if (direct) return direct;
+      if (!isRnModel) {
+        const synonymGroups = [
+          ["sconc_dust", "pm25", "pm10", "dust_load", "dod550"],
+          ["no2", "nox"],
+        ];
+        for (const group of synonymGroups) {
+          if (group.includes(desired)) {
+            for (const candId of group) {
+              const found = vars.find((v) => v.id === candId);
+              if (found) return found;
+            }
+          }
+        }
+      }
+    }
+    if (this.activeVariable && (!isRnModel || this.activeVariable.category === "radionuclide")) {
+      const currSame = vars.find((v) => v.id === this.activeVariable.id);
+      if (currSame) return currSame;
+    }
+    const fallbacks = isRnModel
+      ? ["rn_i131_sfc", "rn_cs137_sfc"]
+      : ["wind10m", "pm25", "no2", "sconc_dust"];
+    for (const fid of fallbacks) {
+      const hit = vars.find((v) => v.id === fid);
+      if (hit) return hit;
+    }
+    return vars[0];
+  }
+
+  selectModel(
+    modelId,
+    {
+      fromAuto = false,
+      fromTour = false,
+      fitView = false,
+      fitDurationMs = 1000,
+      resetTimelineToStart = false,
+      preferredVarId = null,
+    } = {}
+  ) {
     if (!this.activeCycle || !this.activeCycle.models) return;
     const modelIndex = this.activeCycle.models.findIndex((m) => m.id === modelId);
     const model = modelIndex >= 0 ? this.activeCycle.models[modelIndex] : this.activeCycle.models[0];
@@ -535,9 +893,10 @@ class DustyApp {
     const wasSameModel = this.activeModel && this.activeModel.id === model.id;
 
     if (!wasSameModel && this.activeModel) {
-      this.scalarLayer.beginModelTransition();
+      this.scalarLayer.beginModelTransition(fromTour ? 480 : 200);
     }
 
+    this._queuedPlayTimestep = null;
     this.activeModel = model;
     this.scalarLayer.setDomainOutline(modelIndex > 0);
     this.probe.setModelMeta(model);
@@ -554,10 +913,10 @@ class DustyApp {
     if (fitView && model.grid) {
       const camExtra =
         isMicro && this.showBuildings3D
-          ? { pitch: 50, bearing: -15 }
-          : this._autoTilted
-          ? { pitch: 0, bearing: 0 }
-          : {};
+          ? { pitch: 50, bearing: -15, duration: fitDurationMs, essential: true }
+          : this._autoTilted || fromTour
+          ? { pitch: 0, bearing: 0, duration: fitDurationMs, essential: true }
+          : { duration: fitDurationMs, essential: true };
       this._fitBoundsSafe(model.grid, camExtra);
       this._autoTilted = isMicro && this.showBuildings3D;
     } else if (map) {
@@ -575,22 +934,8 @@ class DustyApp {
     const vars = model.variables || [];
     this._populateVariables(vars);
 
-    let defaultVarId = vars.length > 0 ? vars[0].id : null;
-    if (preferredVarId && vars.some((v) => v.id === preferredVarId)) {
-      defaultVarId = preferredVarId;
-    } else if (this.activeVariable && vars.some((v) => v.id === this.activeVariable.id)) {
-      defaultVarId = this.activeVariable.id;
-    } else if (vars.some((v) => v.id === "wind10m")) {
-      defaultVarId = "wind10m";
-    } else if (vars.some((v) => v.id === "pm25")) {
-      defaultVarId = "pm25";
-    } else if (vars.some((v) => v.id === "no2")) {
-      defaultVarId = "no2";
-    } else if (vars.some((v) => v.id === "sconc_dust")) {
-      defaultVarId = "sconc_dust";
-    }
-
-    const activeVarObj = vars.find((v) => v.id === defaultVarId) || vars[0];
+    const isRnModel = String(model.model_family || "").toLowerCase() === "radionuclide";
+    const activeVarObj = this._resolvePreferredVariable(vars, preferredVarId, isRnModel);
     if (activeVarObj) {
       this.activeVariable = activeVarObj;
       this.probe.setVarConfig(activeVarObj);
@@ -601,7 +946,9 @@ class DustyApp {
     }
 
     this.timeline.setTimesteps(model.timesteps || [], false, this.activeCycle.init_time);
-    if (targetUtc) {
+    if (resetTimelineToStart) {
+      this.timeline.goTo(0, false);
+    } else if (targetUtc) {
       this.timeline.syncToUtc(targetUtc, false);
     } else {
       this.timeline.goTo(0, false);
@@ -617,6 +964,8 @@ class DustyApp {
 
     if (fromAuto) {
       console.log(`[Dusty Earth] Auto-selected model: ${model.name} (${model.badge})`);
+    } else if (fromTour) {
+      console.log(`[Dusty Earth] Tour presenting model: ${model.name} (${model.badge})`);
     }
   }
 
@@ -732,7 +1081,10 @@ class DustyApp {
           const clampedY = Math.max(66, Math.min(vh - 135, anchorY));
           const alignClass = isSmall ? " centered" : "";
           const badgeText = this._escapeHtml(m.badge || this._formatGridSpacing(m.resolution_m));
-          const tagText = state.mode === "auto" || state.mode === "model" ? `${this._escapeHtml(fam.label)} · ${badgeText}` : badgeText;
+          const tagText =
+            state.mode === "auto" || state.mode === "model" || state.mode === "tour" || state.mode === "rn-tour"
+              ? `${this._escapeHtml(fam.label)} · ${badgeText}`
+              : badgeText;
           tagFragments.push(
             `<div class="domain-map-tag${alignClass}" style="left:${clampedX.toFixed(1)}px;top:${clampedY.toFixed(1)}px;--tag-color:${fam.color};">${tagText}</div>`
           );
@@ -758,6 +1110,27 @@ class DustyApp {
 
     const card = this.dom.domainPreviewCard;
     if (!card) return;
+
+    if (state.mode === "tour" || state.mode === "rn-tour") {
+      const isRnDemo = state.mode === "rn-tour";
+      const chips = models
+        .map((m, i) => {
+          const fam = this._getModelFamilyMeta(m);
+          const isAct = this.activeModel && this.activeModel.id === m.id;
+          return `<span class="preview-chip${isAct ? " is-active" : ""}"><span class="model-family-dot" style="background:${fam.color};color:${fam.color};"></span>${i + 1}. ${this._escapeHtml(fam.label)} ${this._escapeHtml(m.badge)}</span>`;
+        })
+        .join("");
+      card.style.setProperty("--preview-color", isRnDemo ? "#f43f5e" : "#38bdf8");
+      card.innerHTML = `
+        <div class="preview-card-head">
+          <span class="preview-card-title">${isRnDemo ? "☢️ Radionuclide Scenario Demo" : "🎬 Presentation Tour Sequence"}</span>
+          <span class="preview-card-sub">${models.length} model${models.length === 1 ? "" : "s"} &middot; plays &amp; cycles smoothly</span>
+        </div>
+        <div class="preview-card-specs">${chips}</div>
+      `;
+      card.hidden = false;
+      return;
+    }
 
     if (state.mode === "auto") {
       const countsByFam = this._groupModelsByFamily(models)
@@ -852,12 +1225,35 @@ class DustyApp {
     }, delayMs);
   }
 
+  _getAutoCandidateModels() {
+    if (!this.activeCycle || !Array.isArray(this.activeCycle.models)) return [];
+    const nonRn = this.activeCycle.models.filter(
+      (m) => this._getModelFamilyMeta(m).key !== "radionuclide"
+    );
+    if (nonRn.length <= 1) return nonRn;
+
+    const activeFam = this.activeModel ? this._getModelFamilyMeta(this.activeModel).key : "wrf";
+    let chain;
+    if (activeFam === "icon") {
+      chain = nonRn.filter((m) => this._getModelFamilyMeta(m).key === "icon");
+    } else {
+      chain = nonRn.filter((m) => {
+        const k = this._getModelFamilyMeta(m).key;
+        return k === "wrf" || k === "palm" || k === "generic";
+      });
+    }
+    return chain.length > 0 ? chain : nonRn;
+  }
+
   _evaluateAutoModel() {
     this._syncModelSelectorUI();
     if (!this.autoModelMode || !this.activeCycle || !this.activeCycle.models || !this.mapEngine.map) {
       return;
     }
-    const models = this.activeCycle.models;
+    if (this.activeModel && this._getModelFamilyMeta(this.activeModel).key === "radionuclide") {
+      return;
+    }
+    const models = this._getAutoCandidateModels();
     if (models.length <= 1) return;
 
     const zoom = this.mapEngine.map.getZoom();
@@ -906,9 +1302,22 @@ class DustyApp {
       cldfra: "☁️",
       swdown: "☀️",
       swnet: "🔆",
+      rn_i131_sfc: "☢️",
+      rn_i131_col: "☢️",
+      rn_i131_dep: "⚠️",
+      rn_i131_ddep: "⬇️",
+      rn_i131_wdep: "🌧️",
+      rn_i131_upt: "🧫",
+      rn_i131_gas_pct: "💨",
+      rn_i131_coarse_pct: "🌪️",
+      rn_cs137_sfc: "☢️",
+      rn_cs137_col: "☢️",
+      rn_cs137_dep: "⚠️",
+      rn_cs137_coarse_pct: "🌪️",
     };
 
     const categoryMeta = [
+      { key: "radionuclide", label: "☢ Radionuclide", match: (c) => c === "radionuclide" },
       { key: "particulates", label: "Particulates & Dust", match: (c) => c === "aerosol" || c === "dust" },
       { key: "chemistry", label: "Trace Gases", match: (c) => c === "chemistry" },
       { key: "ghg", label: "GHGs", match: (c) => c === "ghg" },
@@ -931,7 +1340,10 @@ class DustyApp {
         </span>
         <span class="layer-unit">${v.units}</span>
       `;
-      btn.addEventListener("click", () => this.selectVariable(v.id));
+      btn.addEventListener("click", () => {
+        this.disableTourMode("variable-select");
+        this.selectVariable(v.id);
+      });
       return btn;
     };
 
@@ -949,6 +1361,26 @@ class DustyApp {
         });
       } else if (cat.key === "ghg") {
         const order = ["co2", "ch4"];
+        groupVars.sort((a, b) => {
+          const ia = order.indexOf(a.id);
+          const ib = order.indexOf(b.id);
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        });
+      } else if (cat.key === "radionuclide") {
+        const order = [
+          "rn_i131_sfc",
+          "rn_i131_col",
+          "rn_i131_dep",
+          "rn_i131_ddep",
+          "rn_i131_wdep",
+          "rn_i131_upt",
+          "rn_i131_gas_pct",
+          "rn_i131_coarse_pct",
+          "rn_cs137_sfc",
+          "rn_cs137_col",
+          "rn_cs137_dep",
+          "rn_cs137_coarse_pct",
+        ];
         groupVars.sort((a, b) => {
           const ia = order.indexOf(a.id);
           const ib = order.indexOf(b.id);
@@ -1005,6 +1437,16 @@ class DustyApp {
     const v = this.activeModel.variables.find((item) => item.id === varId);
     if (!v) return;
 
+    const isRnModel =
+      String((this.activeModel && this.activeModel.model_family) || "").toLowerCase() === "radionuclide" ||
+      v.category === "radionuclide";
+    if (isRnModel) {
+      this._preferredRnVarId = v.id;
+    } else {
+      this._preferredAtmoVarId = v.id;
+    }
+
+    this._queuedPlayTimestep = null;
     this.activeVariable = v;
     this.probe.setVarConfig(v);
 
@@ -1021,10 +1463,16 @@ class DustyApp {
   }
 
   _updateLegend(v) {
+    const formatTick = (val) => {
+      if (v.log_scale && val > 0 && (val < 0.01 || val >= 1e4)) {
+        return val.toExponential(0).replace("+", "");
+      }
+      return String(val);
+    };
     this.dom.legendTitle.textContent = v.short_name || v.name;
-    this.dom.legendUnits.textContent = `[${v.units}]`;
-    this.dom.legendMin.textContent = `${v.vmin} ${v.units}`;
-    this.dom.legendMax.textContent = `${v.vmax} ${v.units}`;
+    this.dom.legendUnits.textContent = v.log_scale ? `[${v.units}, log₁₀]` : `[${v.units}]`;
+    this.dom.legendMin.textContent = `${formatTick(v.vmin)} ${v.units}`;
+    this.dom.legendMax.textContent = `${formatTick(v.vmax)} ${v.units}`;
 
     if (v.colormap && v.colormap.length > 0) {
       const parts = v.colormap.map((s) => {
@@ -1034,62 +1482,126 @@ class DustyApp {
       });
       this.dom.legendGradient.style.background = `linear-gradient(to right, ${parts.join(", ")})`;
     }
+
+    if (this.dom.legendDock) {
+      let rnEl = document.getElementById("legend-rn-summary");
+      const meta = this.activeModel && this.activeModel.radionuclide_meta;
+      if (meta && meta.nuclides) {
+        if (!rnEl) {
+          rnEl = document.createElement("div");
+          rnEl.id = "legend-rn-summary";
+          rnEl.style.cssText =
+            "margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.12);font-size:0.72rem;line-height:1.35;color:#fda4af;";
+          this.dom.legendDock.appendChild(rnEl);
+        }
+        const i131 = meta.nuclides.I131 || {};
+        const arrTxt = i131.doha_arrival_hour != null ? `T+${i131.doha_arrival_hour}h` : "none (0 Bq/m³)";
+        const peakVal = Number(i131.doha_sfc_peak_bq_m3 || 0);
+        const peakTxt = peakVal > 0 ? peakVal.toExponential(1) : "0";
+        rnEl.textContent = `Hypothetical (${meta.plant_name || meta.plant_id}) · Doha I-131 arrival: ${arrTxt} · peak: ${peakTxt} Bq/m³`;
+        rnEl.style.display = "block";
+      } else if (rnEl) {
+        rnEl.style.display = "none";
+      }
+    }
+  }
+
+  _isTimestepCached(timestep) {
+    if (!timestep || !this.activeVariable || !this.scalarLayer) return false;
+    const varFiles = timestep.files && timestep.files[this.activeVariable.id];
+    if (varFiles && varFiles.scalar && !this.scalarLayer.cache.has(varFiles.scalar)) {
+      return false;
+    }
+    if (this.showWindOverlay && this.windParticles) {
+      const windFiles = timestep.files && timestep.files["wind10m"];
+      if (windFiles && windFiles.u && windFiles.v) {
+        if (!this.windParticles.cache.has(windFiles.u) || !this.windParticles.cache.has(windFiles.v)) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   async loadTimestep(timestep) {
     if (!timestep || !this.activeModel || !this.activeVariable) return;
 
-    const ticket = ++this._timestepTicket;
-    const gridMeta = this.activeModel.grid;
-    const activeVar = this.activeVariable;
-    const varFiles = timestep.files[activeVar.id];
-    const windFiles = this.showWindOverlay ? timestep.files["wind10m"] : null;
-
-    if (varFiles && varFiles.scalar) {
-      try {
-        await this.scalarLayer.loadBuffer(varFiles.scalar, varFiles);
-        if (ticket !== this._timestepTicket) return;
-        await this.scalarLayer.setField(varFiles, gridMeta, activeVar);
-      } catch (err) {
-        if (ticket !== this._timestepTicket) return;
-        console.warn("[Dusty Earth] Failed to load scalar frame:", err);
-      }
-    } else {
-      this.scalarLayer.clear();
+    const isPlaying = Boolean(this.timeline && this.timeline.isPlaying);
+    const isCached = this._isTimestepCached(timestep);
+    if (isPlaying && !isCached && this._renderInFlight) {
+      this._queuedPlayTimestep = timestep;
+      return;
     }
 
-    if (ticket !== this._timestepTicket) return;
+    this._queuedPlayTimestep = null;
+    const ticket = ++this._timestepTicket;
+    return this._renderTimestepNow(timestep, ticket);
+  }
 
-    const isHighFreqPlay = Boolean(
-      this.timeline &&
-      this.timeline.isPlaying &&
-      this.timeline.getStepIntervalSeconds() <= 120
-    );
-    const nowMs = performance.now();
-    const allowWindTick = !isHighFreqPlay || (nowMs - (this._lastWindUpdateMs || 0) >= 90);
+  async _renderTimestepNow(timestep, ticket) {
+    this._renderInFlight = true;
+    try {
+      const gridMeta = this.activeModel.grid;
+      const activeVar = this.activeVariable;
+      const varFiles = timestep.files[activeVar.id];
+      const windFiles = this.showWindOverlay ? timestep.files["wind10m"] : null;
 
-    if (this.showWindOverlay && allowWindTick) {
-      if (windFiles && windFiles.u && windFiles.v) {
+      if (varFiles && varFiles.scalar) {
         try {
-          await Promise.all([
-            this.windParticles.loadBuffer(windFiles.u, windFiles, "u"),
-            this.windParticles.loadBuffer(windFiles.v, windFiles, "v"),
-          ]);
+          await this.scalarLayer.loadBuffer(varFiles.scalar, varFiles);
           if (ticket !== this._timestepTicket) return;
-          this._lastWindUpdateMs = performance.now();
-          await this.windParticles.setWindField(windFiles, gridMeta);
+          await this.scalarLayer.setField(varFiles, gridMeta, activeVar);
         } catch (err) {
           if (ticket !== this._timestepTicket) return;
-          console.warn("[Dusty Earth] Failed to load wind field:", err);
+          console.warn("[Dusty Earth] Failed to load scalar frame:", err);
         }
       } else {
-        this.windParticles.stop();
-        this.windParticles.clear();
+        this.scalarLayer.clear();
       }
-    }
 
-    if (ticket === this._timestepTicket) {
-      this._preloadUpcomingFrames();
+      if (ticket !== this._timestepTicket) return;
+
+      const isHighFreqPlay = Boolean(
+        this.timeline &&
+        this.timeline.isPlaying &&
+        this.timeline.getStepIntervalSeconds() <= 120
+      );
+      const nowMs = performance.now();
+      const allowWindTick = !isHighFreqPlay || (nowMs - (this._lastWindUpdateMs || 0) >= 90);
+
+      if (this.showWindOverlay && allowWindTick) {
+        if (windFiles && windFiles.u && windFiles.v) {
+          try {
+            await Promise.all([
+              this.windParticles.loadBuffer(windFiles.u, windFiles, "u"),
+              this.windParticles.loadBuffer(windFiles.v, windFiles, "v"),
+            ]);
+            if (ticket !== this._timestepTicket) return;
+            this._lastWindUpdateMs = performance.now();
+            await this.windParticles.setWindField(windFiles, gridMeta);
+          } catch (err) {
+            if (ticket !== this._timestepTicket) return;
+            console.warn("[Dusty Earth] Failed to load wind field:", err);
+          }
+        } else {
+          this.windParticles.stop();
+          this.windParticles.clear();
+        }
+      }
+
+      if (ticket === this._timestepTicket) {
+        this._preloadUpcomingFrames();
+      }
+    } finally {
+      if (ticket === this._timestepTicket) {
+        this._renderInFlight = false;
+        const queued = this._queuedPlayTimestep;
+        if (queued && this.activeModel && this.activeVariable) {
+          this._queuedPlayTimestep = null;
+          const nextTicket = ++this._timestepTicket;
+          void this._renderTimestepNow(queued, nextTicket);
+        }
+      }
     }
   }
 
@@ -1108,7 +1620,7 @@ class DustyApp {
     const cells = (grid.nx || 0) * (grid.ny || 0);
     const dtSec = Math.max(1, this.timeline.getStepIntervalSeconds());
     const stride = this.timeline.isPlaying
-      ? Math.max(1, Math.floor((this.timeline.getEffectiveSimSecondsPerRealSec() / 60) / dtSec))
+      ? Math.max(1, Math.round((this.timeline.getEffectiveSimSecondsPerRealSec() * 0.045) / dtSec))
       : 1;
     const lookahead = cells > 1_000_000 ? 3 : 6;
 
@@ -1127,15 +1639,64 @@ class DustyApp {
         }
       }
     }
+
+    if (this.tourScope && curr >= Math.floor(timesteps.length * 0.85)) {
+      const playlist = this._getTourPlaylist(this.tourScope);
+      const cIdx = playlist.findIndex((m) => m.id === this.activeModel.id);
+      if (cIdx >= 0 && playlist.length > 1) {
+        const nextModel = playlist[(cIdx + 1) % playlist.length];
+        const key = `${this.tourScope}:${nextModel.id}`;
+        if (this._preloadedNextTourKey !== key && nextModel.timesteps && nextModel.timesteps.length > 0) {
+          this._preloadedNextTourKey = key;
+          const nextTs0 = nextModel.timesteps[0];
+          const isNextRn = String(nextModel.model_family || "").toLowerCase() === "radionuclide";
+          const nextVar = this._resolvePreferredVariable(nextModel.variables || [], null, isNextRn);
+          if (nextTs0 && nextTs0.files) {
+            const nvf = nextVar ? nextTs0.files[nextVar.id] : null;
+            if (nvf && nvf.scalar) {
+              this.scalarLayer.loadBuffer(nvf.scalar, nvf).catch(() => {});
+            }
+            if (this.showWindOverlay && nextTs0.files["wind10m"]) {
+              const nwf = nextTs0.files["wind10m"];
+              if (nwf.u && nwf.v) {
+                this.windParticles.loadBuffer(nwf.u, nwf, "u").catch(() => {});
+                this.windParticles.loadBuffer(nwf.v, nwf, "v").catch(() => {});
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   _bindEvents() {
     this.dom.cycleSelect.addEventListener("change", (e) => {
-      this.selectCycle(e.target.value);
+      this.disableTourMode("cycle-select");
+      this.selectCycle(e.target.value, { tourScope: null });
     });
+
+    if (this.dom.modelTourBtn) {
+      this.dom.modelTourBtn.addEventListener("click", () => {
+        if (this.tourScope === "standard") {
+          this.disableTourMode("tour-btn");
+        } else {
+          this.enableTourMode("standard", { restartFromFirst: false });
+        }
+      });
+      const showTourPreview = () => {
+        if (!this.activeCycle || !this.activeCycle.models) return;
+        this._showDomainPreview({
+          mode: "tour",
+          models: this._getTourPlaylist("standard"),
+        });
+      };
+      this.dom.modelTourBtn.addEventListener("mouseenter", showTourPreview);
+      this.dom.modelTourBtn.addEventListener("focus", showTourPreview);
+    }
 
     if (this.dom.modelAutoBtn) {
       this.dom.modelAutoBtn.addEventListener("click", () => {
+        this.disableTourMode("auto-btn");
         this.autoModelMode = true;
         this._syncModelSelectorUI();
         this._evaluateAutoModel();
@@ -1144,7 +1705,7 @@ class DustyApp {
         if (!this.activeCycle || !this.activeCycle.models) return;
         this._showDomainPreview({
           mode: "auto",
-          models: this.activeCycle.models,
+          models: this._getAutoCandidateModels(),
         });
       };
       this.dom.modelAutoBtn.addEventListener("mouseenter", showAutoPreview);
@@ -1210,6 +1771,26 @@ class DustyApp {
       this.dom.settingsPanel.classList.remove("open");
     });
 
+    if (this.dom.settingTourBtn) {
+      this.dom.settingTourBtn.addEventListener("click", () => {
+        if (this.tourScope === "standard") {
+          this.disableTourMode("settings-tour");
+        } else {
+          this.enableTourMode("standard", { restartFromFirst: false });
+        }
+      });
+    }
+
+    if (this.dom.settingRnTourBtn) {
+      this.dom.settingRnTourBtn.addEventListener("click", () => {
+        if (this.tourScope === "radionuclide") {
+          this.disableTourMode("settings-rn-tour");
+        } else {
+          this.enableTourMode("radionuclide", { restartFromFirst: false });
+        }
+      });
+    }
+
     this.dom.particleCountSlider.addEventListener("input", (e) => {
       const val = Number(e.target.value);
       this.dom.particleCountVal.textContent = String(val);
@@ -1222,6 +1803,18 @@ class DustyApp {
       this.windParticles.setSpeed(val * 0.00035);
     });
 
+    if (this.dom.fieldOpacitySlider) {
+      this.dom.fieldOpacitySlider.addEventListener("input", (e) => {
+        const val = Number(e.target.value);
+        if (this.dom.fieldOpacityVal) {
+          this.dom.fieldOpacityVal.textContent = `${Math.round(val * 100)}%`;
+        }
+        if (this.scalarLayer) {
+          this.scalarLayer.setOpacity(val);
+        }
+      });
+    }
+
     if (this.dom.bldgOpacitySlider) {
       this.dom.bldgOpacitySlider.addEventListener("input", (e) => {
         const val = Number(e.target.value);
@@ -1230,6 +1823,16 @@ class DustyApp {
         }
         if (this.buildingsLayer) {
           this.buildingsLayer.setBuildingOpacity(val);
+        }
+      });
+    }
+
+    if (this.dom.labelsToggleBtn) {
+      this.dom.labelsToggleBtn.addEventListener("click", () => {
+        this.showMapLabels = !this.showMapLabels;
+        this._updateToggleButtonUI(this.dom.labelsToggleBtn, this.showMapLabels);
+        if (this.mapEngine) {
+          this.mapEngine.setLabelsVisible(this.showMapLabels);
         }
       });
     }
@@ -1292,32 +1895,46 @@ class DustyApp {
         case " ":
         case "Spacebar":
           e.preventDefault();
+          if (
+            document.activeElement &&
+            document.activeElement.tagName === "BUTTON" &&
+            document.activeElement !== this.dom.playBtn
+          ) {
+            document.activeElement.blur();
+          }
+          if (this.tourScope) this.disableTourMode("hotkey-space");
           this.timeline.togglePlay();
           break;
         case "ArrowLeft":
           e.preventDefault();
+          if (this.tourScope) this.disableTourMode("hotkey-arrow-left");
           this.timeline.pause();
           this.timeline.step(-hourStepCount);
           break;
         case "ArrowRight":
           e.preventDefault();
+          if (this.tourScope) this.disableTourMode("hotkey-arrow-right");
           this.timeline.pause();
           this.timeline.step(hourStepCount);
           break;
         case "ArrowUp":
           e.preventDefault();
+          this.disableTourMode("variable-key");
           this._switchVariableOffset(-1);
           break;
         case "ArrowDown":
           e.preventDefault();
+          this.disableTourMode("variable-key");
           this._switchVariableOffset(1);
           break;
         case "Home":
           e.preventDefault();
+          if (this.tourScope) this.disableTourMode("hotkey-home");
           this.timeline.first();
           break;
         case "End":
           e.preventDefault();
+          if (this.tourScope) this.disableTourMode("hotkey-end");
           this.timeline.last();
           break;
         case "w":
@@ -1342,7 +1959,24 @@ class DustyApp {
         case "l":
         case "L":
           e.preventDefault();
+          if (this.tourScope) this.disableTourMode("hotkey-loop");
           this.timeline.toggleLoopMode();
+          break;
+        case "p":
+        case "P":
+          e.preventDefault();
+          if (this.tourScope) {
+            this.disableTourMode("hotkey-p");
+          } else {
+            this.enableTourMode("standard", { restartFromFirst: false });
+          }
+          break;
+        case "m":
+        case "M":
+          if (this.dom.labelsToggleBtn) {
+            e.preventDefault();
+            this.dom.labelsToggleBtn.click();
+          }
           break;
         case "i":
         case "I":
